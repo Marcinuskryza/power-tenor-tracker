@@ -7,7 +7,7 @@ const LS_KEYS = {
   totalExp: "ptt_totalExp_v2",
 };
 
-const LEVEL_EXP = 100; // 100 EXP = 1 level (prosto i "game'owo")
+const LEVEL_EXP = 100;
 
 const DEFAULT_PRESETS = [
   { id: "preset-post", name: "Post", exp: 30 },
@@ -64,23 +64,18 @@ function uid(prefix = "id") {
   return `${prefix}-${Math.random().toString(16).slice(2)}-${Date.now()}`;
 }
 
-/**
- * Long-press hook: triggers after `ms` unless user releases earlier
- */
+/** ✅ Hook OK: będzie używany tylko w komponentach (nie w mapie) */
 function useLongPress(callback, ms = 3000) {
   const timerRef = useRef(null);
-  const startedRef = useRef(false);
 
   const start = (e) => {
     e?.preventDefault?.();
-    startedRef.current = true;
     timerRef.current = setTimeout(() => {
       callback?.();
     }, ms);
   };
 
   const clear = () => {
-    startedRef.current = false;
     if (timerRef.current) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
@@ -98,6 +93,40 @@ function useLongPress(callback, ms = 3000) {
   };
 }
 
+/** ✅ Komponent kafelka szybkiej akcji (tu można bezpiecznie użyć hooka) */
+function PresetChip({ preset, onClick, onLongPressDelete }) {
+  const lp = useLongPress(() => onLongPressDelete(preset), 3000);
+
+  return (
+    <button
+      className="chip"
+      onClick={() => onClick(preset)}
+      {...lp}
+      title="Kliknij: dodaj. Przytrzymaj 3 sek: usuń."
+    >
+      <span className="stroke">
+        {preset.name} ({preset.exp})
+      </span>
+      <span className="chipHint stroke">⏳</span>
+    </button>
+  );
+}
+
+/** ✅ Komponent wpisu EXP (tu też hook bezpieczny) */
+function EntryCard({ entry, onLongPressDelete }) {
+  const lp = useLongPress(() => onLongPressDelete(entry), 3000);
+
+  return (
+    <div className="entryCard" {...lp} title="Przytrzymaj 3 sekundy, aby usunąć">
+      <div className="entryLeft">
+        <div className="entryName stroke">{entry.name}</div>
+        <div className="entryTime stroke">{new Date(entry.createdAt).toLocaleString()}</div>
+      </div>
+      <div className="entryExp stroke">+{entry.exp}</div>
+    </div>
+  );
+}
+
 export default function App() {
   const [activityName, setActivityName] = useState("");
   const [activityExp, setActivityExp] = useState("");
@@ -106,7 +135,7 @@ export default function App() {
   const [presets, setPresets] = useState(DEFAULT_PRESETS);
   const [totalExp, setTotalExp] = useState(0);
 
-  // Load from localStorage
+  // Load
   useEffect(() => {
     const e = safeParse(localStorage.getItem(LS_KEYS.entries), []);
     const p = safeParse(localStorage.getItem(LS_KEYS.presets), null);
@@ -130,13 +159,11 @@ export default function App() {
     localStorage.setItem(LS_KEYS.totalExp, String(totalExp));
   }, [totalExp]);
 
-  // Level calc
   const level = Math.floor(totalExp / LEVEL_EXP) + 1;
   const expIntoLevel = totalExp % LEVEL_EXP;
   const expToNext = LEVEL_EXP;
   const progress = (expIntoLevel / expToNext) * 100;
 
-  // Reports
   const report = useMemo(() => {
     const today = nowISO();
     const expToday = entries
@@ -155,13 +182,8 @@ export default function App() {
       byName.set(key, prev);
     }
 
-    const topByExp = [...byName.values()]
-      .sort((a, b) => b.exp - a.exp)
-      .slice(0, 5);
-
-    const topByCount = [...byName.values()]
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 5);
+    const topByExp = [...byName.values()].sort((a, b) => b.exp - a.exp).slice(0, 5);
+    const topByCount = [...byName.values()].sort((a, b) => b.count - a.count).slice(0, 5);
 
     const keys7 = lastNDaysKeys(7);
     const perDay = new Map(keys7.map((k) => [k, 0]));
@@ -179,7 +201,6 @@ export default function App() {
     const n = name.trim();
     if (!n) return;
 
-    // jeśli istnieje preset o tej nazwie -> aktualizuj jego EXP do ostatnio użytego
     setPresets((prev) => {
       const idx = prev.findIndex((p) => p.name.toLowerCase() === n.toLowerCase());
       if (idx >= 0) {
@@ -187,7 +208,6 @@ export default function App() {
         copy[idx] = { ...copy[idx], name: n, exp };
         return copy;
       }
-      // dodaj nowy preset na koniec
       return [...prev, { id: uid("preset"), name: n, exp }];
     });
   };
@@ -199,36 +219,23 @@ export default function App() {
     if (!name) return alert("Wpisz nazwę aktywności 🙂");
     if (!Number.isFinite(exp) || exp <= 0) return alert("Wpisz poprawne EXP (np. 30)");
 
-    const entry = {
-      id: uid("entry"),
-      name,
-      exp: Math.floor(exp),
-      createdAt: nowISO(),
-    };
+    const entry = { id: uid("entry"), name, exp: Math.floor(exp), createdAt: nowISO() };
 
     setEntries((prev) => [entry, ...prev]);
     setTotalExp((prev) => prev + entry.exp);
 
-    // ✅ dodaj do “pola obok” (Szybkie akcje)
+    // dodaj też do szybkich akcji
     addOrUpdatePresetFromEntry(name, entry.exp);
 
-    // opcjonalnie czyść inputy
     setActivityName("");
     setActivityExp("");
   };
 
   const handleQuick = (p) => {
-    // 1) uzupełnij pola (żeby było “jak w grze” i widać co dodasz)
     setActivityName(p.name);
     setActivityExp(String(p.exp));
 
-    // 2) i od razu dodaj wpis jednym tapnięciem
-    const entry = {
-      id: uid("entry"),
-      name: p.name,
-      exp: p.exp,
-      createdAt: nowISO(),
-    };
+    const entry = { id: uid("entry"), name: p.name, exp: p.exp, createdAt: nowISO() };
     setEntries((prev) => [entry, ...prev]);
     setTotalExp((prev) => prev + entry.exp);
   };
@@ -239,16 +246,13 @@ export default function App() {
     setTotalExp(0);
   };
 
-  const removeEntry = (id) => {
-    setEntries((prev) => {
-      const found = prev.find((x) => x.id === id);
-      if (found) setTotalExp((t) => Math.max(0, t - found.exp));
-      return prev.filter((x) => x.id !== id);
-    });
+  const removeEntry = (entry) => {
+    setEntries((prev) => prev.filter((x) => x.id !== entry.id));
+    setTotalExp((t) => Math.max(0, t - entry.exp));
   };
 
-  const removePreset = (id) => {
-    setPresets((prev) => prev.filter((p) => p.id !== id));
+  const removePreset = (preset) => {
+    setPresets((prev) => prev.filter((p) => p.id !== preset.id));
   };
 
   return (
@@ -260,14 +264,12 @@ export default function App() {
         <div className="subtitle stroke">Wygląd jak gra RPG • EXP • levele</div>
       </header>
 
-      {/* LEVEL CARD */}
       <section className="card cardGlass">
         <div className="levelRow">
           <div className="pill">
             <span className="star">★</span>
             <span className="stroke">LEVEL {level}</span>
           </div>
-
           <div className="levelMeta stroke">
             {expIntoLevel}/{expToNext} EXP
           </div>
@@ -281,7 +283,6 @@ export default function App() {
         <div className="smallText stroke">Total EXP: {totalExp}</div>
       </section>
 
-      {/* INPUT / ACTIONS */}
       <section className="card cardGlass">
         <div className="inputs">
           <input
@@ -306,30 +307,21 @@ export default function App() {
           </div>
         </div>
 
-        {/* ✅ “Pole obok” — rośnie wraz z ilością */}
         <div className="quickWrap">
           <div className="quickTitle stroke">Szybkie akcje</div>
           <div className="quickGrid">
-            {presets.map((p) => {
-              const lp = useLongPress(() => {
-                if (confirm(`Usunąć szybką akcję: "${p.name} (${p.exp})"?`)) removePreset(p.id);
-              }, 3000);
-
-              return (
-                <button
-                  key={p.id}
-                  className="chip"
-                  onClick={() => handleQuick(p)}
-                  {...lp}
-                  title="Kliknij: dodaj. Przytrzymaj 3 sek: usuń."
-                >
-                  <span className="stroke">
-                    {p.name} ({p.exp})
-                  </span>
-                  <span className="chipHint stroke">⏳</span>
-                </button>
-              );
-            })}
+            {presets.map((p) => (
+              <PresetChip
+                key={p.id}
+                preset={p}
+                onClick={handleQuick}
+                onLongPressDelete={(preset) => {
+                  if (confirm(`Usunąć szybką akcję: "${preset.name} (${preset.exp})"?`)) {
+                    removePreset(preset);
+                  }
+                }}
+              />
+            ))}
           </div>
 
           <button className="btnDanger" onClick={clearAll}>
@@ -338,7 +330,6 @@ export default function App() {
         </div>
       </section>
 
-      {/* REPORT CARD */}
       <section className="card cardGlass">
         <div className="reportHeader">
           <div className="reportTitle stroke">Raport</div>
@@ -413,28 +404,19 @@ export default function App() {
         </div>
       </section>
 
-      {/* ENTRIES */}
       <section className="entries">
         {entries.length === 0 ? (
           <div className="empty stroke">Brak wpisów. Dodaj pierwszy EXP i wbijaj levele 😄</div>
         ) : (
-          entries.map((e) => {
-            const lp = useLongPress(() => {
-              if (confirm(`Usunąć wpis: "${e.name} (+${e.exp})"?`)) removeEntry(e.id);
-            }, 3000);
-
-            return (
-              <div key={e.id} className="entryCard" {...lp} title="Przytrzymaj 3 sekundy, aby usunąć">
-                <div className="entryLeft">
-                  <div className="entryName stroke">{e.name}</div>
-                  <div className="entryTime stroke">
-                    {new Date(e.createdAt).toLocaleString()}
-                  </div>
-                </div>
-                <div className="entryExp stroke">+{e.exp}</div>
-              </div>
-            );
-          })
+          entries.map((e) => (
+            <EntryCard
+              key={e.id}
+              entry={e}
+              onLongPressDelete={(entry) => {
+                if (confirm(`Usunąć wpis: "${entry.name} (+${entry.exp})"?`)) removeEntry(entry);
+              }}
+            />
+          ))
         )}
       </section>
 
