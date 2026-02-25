@@ -108,15 +108,15 @@ function QuickChip({ q, armed, onArm, onUse, onDelete, longPressMs = 2000 }) {
 
   return (
     <button
-      className={"chip outline " + (armed ? "chipArmed" : "")}
+      className={"chip " + (armed ? "chipArmed" : "")}
       onClick={() => {
         if (armed) return;
         onUse(q);
       }}
       {...lp}
     >
-      <span className="chipName">{q.name}</span>
-      <span className="chipExp">({q.exp})</span>
+      <span className="chipName outline">{q.name}</span>
+      <span className="chipExp outline">({q.exp})</span>
       <span className="chipIcon">⏳</span>
 
       {armed && (
