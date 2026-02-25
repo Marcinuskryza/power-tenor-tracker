@@ -340,8 +340,8 @@ export default function App() {
       <div className="shell">
         <header className="header">
           <div>
-            <h1 className="title outline">Power Tenor Tracker</h1>
-            <div className="subtitle outline-soft">Wygląd jak gra RPG • EXP • levele</div>
+            <h1 className="title outline">Życie RPG</h1>
+            <div className="subtitle outline-soft">Witaj w Życie RPG • EXP • levele</div>
           </div>
         </header>
 
@@ -420,7 +420,7 @@ export default function App() {
           </div>
 
           <div className="hint outline-soft">
-            Tip: przytrzymaj <b>2s</b> kafelek szybkiej akcji, żeby pojawiło się 🗑️
+            Tip: przytrzymaj <b>1s</b> 🗑️
           </div>
         </section>
 
@@ -530,7 +530,7 @@ export default function App() {
           )}
 
           <div className="hint outline-soft">
-            Tip: przytrzymaj wpis w historii <b>3s</b>, żeby pojawił się przycisk 🗑️
+            Tip: przytrzymaj <b>1s</b> 🗑️
           </div>
         </section>
 
