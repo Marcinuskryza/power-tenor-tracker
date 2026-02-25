@@ -36,7 +36,30 @@ function clamp(n, a, b) {
   return Math.max(a, Math.min(b, n));
 }
 
-/** Long press – stabilnie na mobile */
+function daysBetween(dateKeyA, dateKeyB) {
+  // dateKey: YYYY-MM-DD
+  const [ya, ma, da] = dateKeyA.split("-").map(Number);
+  const [yb, mb, db] = dateKeyB.split("-").map(Number);
+  const a = new Date(ya, ma - 1, da);
+  const b = new Date(yb, mb - 1, db);
+  a.setHours(12, 0, 0, 0);
+  b.setHours(12, 0, 0, 0);
+  const diff = b.getTime() - a.getTime();
+  return Math.floor(diff / (1000 * 60 * 60 * 24));
+}
+
+/** ---------- RANGI (na bazie Rank XP) ---------- */
+function getRank(rankXP) {
+  const xp = Math.max(0, Math.floor(rankXP));
+
+  if (xp >= 50000) return { name: "MASTER TENOR", tier: "master", min: 50000 };
+  if (xp >= 20000) return { name: "DIAMOND TENOR", tier: "diamond", min: 20000 };
+  if (xp >= 8000) return { name: "GOLD ARTIST", tier: "gold", min: 8000 };
+  if (xp >= 2000) return { name: "SILVER PERFORMER", tier: "silver", min: 2000 };
+  return { name: "BRONZE VOCALIST", tier: "bronze", min: 0 };
+}
+
+/** ---------- Long press – stabilnie na mobile ---------- */
 function useLongPress({ onLongPress, ms = 3000, disabled = false }) {
   const timer = useRef(null);
   const active = useRef(false);
@@ -64,16 +87,16 @@ function useLongPress({ onLongPress, ms = 3000, disabled = false }) {
     onMouseLeave: end,
     onTouchStart: start,
     onTouchEnd: end,
-    onTouchCancel: end
+    onTouchCancel: end,
   };
 }
 
-/* ---------------------- SUBKOMPONENTY (żeby hooki były legalne) ---------------------- */
+/* ---------------------- SUBKOMPONENTY ---------------------- */
 
-function QuickChip({ q, armed, onArm, onCancelArm, onUse, onDelete }) {
+function QuickChip({ q, armed, onArm, onUse, onDelete, longPressMs = 2000 }) {
   const lp = useLongPress({
-    ms: 1000,
-    onLongPress: () => onArm(q.id)
+    ms: longPressMs,
+    onLongPress: () => onArm(q.id),
   });
 
   return (
@@ -108,10 +131,10 @@ function QuickChip({ q, armed, onArm, onCancelArm, onUse, onDelete }) {
   );
 }
 
-function EntryCard({ e, armed, onArm, onDelete }) {
+function EntryCard({ e, armed, onArm, onDelete, longPressMs = 3000 }) {
   const lp = useLongPress({
-    ms: 1000,
-    onLongPress: () => onArm(e.id)
+    ms: longPressMs,
+    onLongPress: () => onArm(e.id),
   });
 
   return (
@@ -138,8 +161,10 @@ function EntryCard({ e, armed, onArm, onDelete }) {
 /* ---------------------- APP ---------------------- */
 
 export default function App() {
-  const LS_ENTRIES = "ptt_entries_v5";
-  const LS_QUICK = "ptt_quick_v5";
+  const LS_ENTRIES = "ptt_entries_v6";
+  const LS_QUICK = "ptt_quick_v6";
+  const LS_RANK_XP = "ptt_rank_xp_v1";
+  const LS_LAST_CHECK = "ptt_last_check_v1";
 
   const [entries, setEntries] = useState(() =>
     safeJsonParse(localStorage.getItem(LS_ENTRIES), [])
@@ -148,9 +173,15 @@ export default function App() {
   const [quickActions, setQuickActions] = useState(() =>
     safeJsonParse(localStorage.getItem(LS_QUICK), [
       { id: uid(), name: "Post", exp: 30 },
-      { id: uid(), name: "Śpiew", exp: 50 }
+      { id: uid(), name: "Śpiew", exp: 50 },
     ])
   );
+
+  // Rank XP jest osobny (do degradacji)
+  const [rankXP, setRankXP] = useState(() => {
+    const v = Number(localStorage.getItem(LS_RANK_XP) ?? 0);
+    return Number.isFinite(v) ? v : 0;
+  });
 
   const [name, setName] = useState("");
   const [exp, setExp] = useState("");
@@ -168,16 +199,22 @@ export default function App() {
   }, [quickActions]);
 
   useEffect(() => {
+    localStorage.setItem(LS_RANK_XP, String(Math.max(0, Math.floor(rankXP))));
+  }, [rankXP]);
+
+  useEffect(() => {
     if (!toast) return;
-    const t = setTimeout(() => setToast(""), 1800);
+    const t = setTimeout(() => setToast(""), 2000);
     return () => clearTimeout(t);
   }, [toast]);
 
+  // Total EXP (historyczny)
   const totalExp = useMemo(
     () => entries.reduce((s, e) => s + (Number(e.exp) || 0), 0),
     [entries]
   );
 
+  // Level (z Total EXP – zostaje jak było)
   const { level, expIntoLevel, expToNext } = useMemo(() => {
     let lvl = 1;
     let remaining = totalExp;
@@ -197,14 +234,18 @@ export default function App() {
     return clamp((expIntoLevel / expToNext) * 100, 0, 100);
   }, [expIntoLevel, expToNext]);
 
-  const todayKey = formatDateKey(Date.now());
+  // Rank info
+  const rank = useMemo(() => getRank(rankXP), [rankXP]);
 
+  // EXP dziś (dla raportu)
+  const todayKey = formatDateKey(Date.now());
   const expToday = useMemo(() => {
     return entries
       .filter((e) => formatDateKey(e.ts) === todayKey)
       .reduce((s, e) => s + (Number(e.exp) || 0), 0);
   }, [entries, todayKey]);
 
+  // Ostatnie 7 dni
   const last7 = useMemo(() => {
     const days = [];
     const now = new Date();
@@ -244,6 +285,55 @@ export default function App() {
     return arr.slice(0, 3);
   }, [entries]);
 
+  /** ---------- DEGRADACJA RANGI ZA BRAK AKTYWNOŚCI ---------- */
+  useEffect(() => {
+    // odpal po załadowaniu entries + rankXP
+    const today = formatDateKey(Date.now());
+    const lastCheck = localStorage.getItem(LS_LAST_CHECK);
+
+    // jeśli pierwsze uruchomienie
+    if (!lastCheck) {
+      localStorage.setItem(LS_LAST_CHECK, today);
+      return;
+    }
+
+    // ile dni minęło od ostatniego sprawdzenia
+    const gap = daysBetween(lastCheck, today);
+    if (gap <= 0) return;
+
+    // mapa aktywnych dni (czy był jakikolwiek wpis)
+    const activeDays = new Set(entries.map((e) => formatDateKey(e.ts)));
+
+    let newRankXP = rankXP;
+    let penalizedDays = 0;
+
+    // sprawdzamy dni pomiędzy lastCheck -> today (bez today)
+    // np. lastCheck = 2026-02-24, today=2026-02-25 => sprawdzamy 2026-02-24? NIE, bo to dzień checka
+    // sprawdzamy: lastCheck+1 ... today-1
+    for (let i = 1; i <= gap - 0; i++) {
+      const d = new Date(lastCheck + "T12:00:00");
+      d.setDate(d.getDate() + i);
+      const key = formatDateKey(d.getTime());
+      if (key === today) break; // nie karzemy dzisiejszego dnia
+
+      if (!activeDays.has(key)) {
+        // kara: max(80, 3% obecnego RankXP)
+        const penalty = Math.max(80, Math.round(newRankXP * 0.03));
+        newRankXP = Math.max(0, newRankXP - penalty);
+        penalizedDays += 1;
+      }
+    }
+
+    // ustawiamy last check na dziś
+    localStorage.setItem(LS_LAST_CHECK, today);
+
+    if (penalizedDays > 0 && newRankXP !== rankXP) {
+      setRankXP(newRankXP);
+      setToast(`Brak aktywności: -${penalizedDays} dzień/dni → spadek Rank XP`);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries]); // entries zmienia się przy starcie i dodawaniu, więc to wystarczy
+
   function addEntry(activityName, activityExp) {
     const cleanName = (activityName || "").trim();
     const numExp = Number(activityExp);
@@ -260,6 +350,9 @@ export default function App() {
     const entry = { id: uid(), name: cleanName, exp: numExp, ts: Date.now() };
     setEntries((prev) => [entry, ...prev]);
 
+    // Rank XP rośnie razem z aktywnością
+    setRankXP((prev) => prev + numExp);
+
     // Dodaj/aktualizuj w szybkich akcjach
     setQuickActions((prev) => {
       const idx = prev.findIndex((q) => q.name.toLowerCase() === cleanName.toLowerCase());
@@ -271,9 +364,12 @@ export default function App() {
       return [...prev, { id: uid(), name: cleanName, exp: numExp }];
     });
 
+    // aktualizuj last_check na dziś (żeby nie karało przez “wczoraj” po dodaniu)
+    localStorage.setItem(LS_LAST_CHECK, formatDateKey(Date.now()));
+
     setName("");
     setExp("");
-    setToast(`+${numExp} EXP ✅`);
+    setToast(`+${numExp} EXP ✅ (Rank XP +${numExp})`);
   }
 
   function clearAll() {
@@ -282,8 +378,10 @@ export default function App() {
   }
 
   function removeEntry(id) {
+    const found = entries.find((x) => x.id === id);
     setEntries((prev) => prev.filter((e) => e.id !== id));
     setArmedEntryId(null);
+    if (found) setRankXP((prev) => Math.max(0, prev - (Number(found.exp) || 0)));
     setToast("Usunięto wpis 🗑️");
   }
 
@@ -299,8 +397,11 @@ export default function App() {
     lines.push("--------------------------------");
     lines.push(`Data: ${new Date().toLocaleString("pl-PL")}`);
     lines.push("");
+    lines.push(`Total EXP (historyczne): ${totalExp}`);
+    lines.push(`Rank XP (do rangi): ${Math.floor(rankXP)}`);
+    lines.push(`Ranga: ${rank.name}`);
+    lines.push("");
     lines.push(`Wpisy: ${entries.length}`);
-    lines.push(`Total EXP: ${totalExp}`);
     lines.push(`EXP dziś: ${expToday}`);
     lines.push(`Level: ${level}`);
     lines.push(`Do następnego: ${Math.max(0, expToNext - expIntoLevel)} EXP`);
@@ -340,17 +441,22 @@ export default function App() {
       <div className="shell">
         <header className="header">
           <div>
-            <h1 className="title outline">Życie RPG</h1>
-            <div className="subtitle outline-soft">Witaj w Życie RPG • EXP • levele</div>
+            <h1 className="title outline">Power Tenor Tracker</h1>
+            <div className="subtitle outline-soft">EXP • levele • rangi • raport</div>
           </div>
         </header>
 
-        {/* LEVEL CARD */}
+        {/* LEVEL + RANK CARD */}
         <section className="card glass levelCard">
-          <div className="levelTop">
+          <div className="levelTop" style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "space-between" }}>
             <div className="levelBadge">
               <span className="star">⭐</span>
               <span className="outline">LEVEL {level}</span>
+            </div>
+
+            <div className="levelBadge" title="Ranga liczona z Rank XP">
+              <span className="star">🏆</span>
+              <span className="outline">{rank.name}</span>
             </div>
 
             <div className="levelNumbers outline">
@@ -363,7 +469,9 @@ export default function App() {
             <div className="xpGloss" />
           </div>
 
-          <div className="muted outline-soft">Total EXP: {totalExp}</div>
+          <div className="muted outline-soft">
+            Total EXP: <b>{totalExp}</b> • Rank XP: <b>{Math.floor(rankXP)}</b>
+          </div>
         </section>
 
         {/* ADD CARD */}
@@ -371,7 +479,7 @@ export default function App() {
           <div className="form">
             <input
               className="input"
-              placeholder="Nazwa aktywności (np. Ćwiczenie śpiewu)"
+              placeholder="Nazwa aktywności"
               value={name}
               onChange={(e) => setName(e.target.value)}
               inputMode="text"
@@ -400,9 +508,9 @@ export default function App() {
                 q={q}
                 armed={armedQuickId === q.id}
                 onArm={(id) => setArmedQuickId(id)}
-                onCancelArm={() => setArmedQuickId(null)}
                 onUse={(item) => addEntry(item.name, item.exp)}
                 onDelete={(id) => removeQuick(id)}
+                longPressMs={2000}
               />
             ))}
           </div>
@@ -420,7 +528,7 @@ export default function App() {
           </div>
 
           <div className="hint outline-soft">
-            Tip: przytrzymaj <b>1s</b> 🗑️
+            Tip: przytrzymaj <b>2s</b> kafelek szybkiej akcji, żeby pojawiło się 🗑️
           </div>
         </section>
 
@@ -443,12 +551,12 @@ export default function App() {
               <div className="miniValue outline">{expToday}</div>
             </div>
             <div className="mini glass2">
-              <div className="miniLabel outline-soft">Level</div>
-              <div className="miniValue outline">{level}</div>
+              <div className="miniLabel outline-soft">Ranga</div>
+              <div className="miniValue outline" style={{ fontSize: 18 }}>{rank.name}</div>
             </div>
             <div className="mini glass2">
-              <div className="miniLabel outline-soft">Do następnego</div>
-              <div className="miniValue outline">{Math.max(0, expToNext - expIntoLevel)} EXP</div>
+              <div className="miniLabel outline-soft">Rank XP</div>
+              <div className="miniValue outline">{Math.floor(rankXP)}</div>
             </div>
           </div>
 
@@ -466,40 +574,6 @@ export default function App() {
               })}
             </div>
           </div>
-
-          <div className="grid2">
-            <div className="mini glass2">
-              <div className="miniLabel outline-soft">Top (EXP)</div>
-              <div className="miniList">
-                {topByExp.length === 0 ? (
-                  <div className="outline">Brak danych</div>
-                ) : (
-                  topByExp.map((t) => (
-                    <div key={t.name} className="miniRow outline">
-                      <span className="miniName">{t.name}</span>
-                      <span className="miniRight">{t.exp}</span>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-
-            <div className="mini glass2">
-              <div className="miniLabel outline-soft">Top (ilość)</div>
-              <div className="miniList">
-                {topByCount.length === 0 ? (
-                  <div className="outline">Brak danych</div>
-                ) : (
-                  topByCount.map((t) => (
-                    <div key={t.name} className="miniRow outline">
-                      <span className="miniName">{t.name}</span>
-                      <span className="miniRight">{t.count}x</span>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
         </section>
 
         {/* ENTRIES */}
@@ -514,7 +588,7 @@ export default function App() {
           </div>
 
           {entries.length === 0 ? (
-            <div className="empty outline">Brak wpisów. Dodaj pierwszy EXP i wbijaj levele 😄</div>
+            <div className="empty outline">Brak wpisów. Dodaj pierwszy EXP 😄</div>
           ) : (
             <div className="entriesList">
               {entries.map((e) => (
@@ -524,13 +598,14 @@ export default function App() {
                   armed={armedEntryId === e.id}
                   onArm={(id) => setArmedEntryId(id)}
                   onDelete={(id) => removeEntry(id)}
+                  longPressMs={3000}
                 />
               ))}
             </div>
           )}
 
           <div className="hint outline-soft">
-            Tip: przytrzymaj <b>1s</b> 🗑️
+            Tip: przytrzymaj wpis <b>3s</b>, żeby pojawił się przycisk 🗑️
           </div>
         </section>
 
