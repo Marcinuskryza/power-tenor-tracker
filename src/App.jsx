@@ -13,9 +13,7 @@ function uid() {
   return Math.random().toString(16).slice(2) + "-" + Date.now().toString(16);
 }
 
-// RPG-ish krzywa exp
 function requiredExpForLevel(level) {
-  // 1: 100, 2:150, 3:200, ...
   return 100 + (level - 1) * 50;
 }
 
@@ -38,26 +36,22 @@ function clamp(n, a, b) {
   return Math.max(a, Math.min(b, n));
 }
 
-// Long press hook (bez crashy na mobile)
+/** Long press – stabilnie na mobile */
 function useLongPress({ onLongPress, ms = 3000, disabled = false }) {
   const timer = useRef(null);
-  const started = useRef(false);
+  const active = useRef(false);
 
   const clear = () => {
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
-    started.current = false;
+    active.current = false;
   };
 
-  const start = (e) => {
+  const start = () => {
     if (disabled) return;
-    // zapobiega “kliknięciu” po long press na mobile
-    if (e?.type === "touchstart") {
-      // passive true by default on some browsers; nie robimy preventDefault tutaj
-    }
-    started.current = true;
+    active.current = true;
     timer.current = setTimeout(() => {
-      if (started.current) onLongPress?.();
+      if (active.current) onLongPress?.();
       clear();
     }, ms);
   };
@@ -74,11 +68,83 @@ function useLongPress({ onLongPress, ms = 3000, disabled = false }) {
   };
 }
 
-export default function App() {
-  const LS_ENTRIES = "ptt_entries_v4";
-  const LS_QUICK = "ptt_quick_v4";
+/* ---------------------- SUBKOMPONENTY (żeby hooki były legalne) ---------------------- */
 
-  const [entries, setEntries] = useState(() => safeJsonParse(localStorage.getItem(LS_ENTRIES), []));
+function QuickChip({ q, armed, onArm, onCancelArm, onUse, onDelete }) {
+  const lp = useLongPress({
+    ms: 2000,
+    onLongPress: () => onArm(q.id)
+  });
+
+  return (
+    <button
+      className={"chip outline " + (armed ? "chipArmed" : "")}
+      onClick={() => {
+        if (armed) return;
+        onUse(q);
+      }}
+      {...lp}
+    >
+      <span className="chipName">{q.name}</span>
+      <span className="chipExp">({q.exp})</span>
+      <span className="chipIcon">⏳</span>
+
+      {armed && (
+        <span
+          className="chipDelete"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onDelete(q.id);
+          }}
+          role="button"
+          aria-label="Usuń szybką akcję"
+          title="Usuń"
+        >
+          🗑️
+        </span>
+      )}
+    </button>
+  );
+}
+
+function EntryCard({ e, armed, onArm, onDelete }) {
+  const lp = useLongPress({
+    ms: 3000,
+    onLongPress: () => onArm(e.id)
+  });
+
+  return (
+    <div className={"entry glass2 " + (armed ? "entryArmed" : "")} {...lp}>
+      <div className="entryLeft">
+        <div className="entryName outline">{e.name}</div>
+        <div className="entryMeta outline-soft">{new Date(e.ts).toLocaleString("pl-PL")}</div>
+      </div>
+
+      <div className="entryRight">
+        <div className="entryExp outline">+{e.exp}</div>
+        <div className="entryTag outline-soft">EXP</div>
+      </div>
+
+      {armed && (
+        <button className="entryDelete outline" onClick={() => onDelete(e.id)}>
+          🗑️ Usuń
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------- APP ---------------------- */
+
+export default function App() {
+  const LS_ENTRIES = "ptt_entries_v5";
+  const LS_QUICK = "ptt_quick_v5";
+
+  const [entries, setEntries] = useState(() =>
+    safeJsonParse(localStorage.getItem(LS_ENTRIES), [])
+  );
+
   const [quickActions, setQuickActions] = useState(() =>
     safeJsonParse(localStorage.getItem(LS_QUICK), [
       { id: uid(), name: "Post", exp: 30 },
@@ -90,9 +156,7 @@ export default function App() {
   const [exp, setExp] = useState("");
   const [toast, setToast] = useState("");
 
-  // Tryb “pokaż usuń” dla konkretnego kafelka wpisu
   const [armedEntryId, setArmedEntryId] = useState(null);
-  // Tryb “pokaż usuń” dla kafelka szybkiej akcji
   const [armedQuickId, setArmedQuickId] = useState(null);
 
   useEffect(() => {
@@ -103,14 +167,16 @@ export default function App() {
     localStorage.setItem(LS_QUICK, JSON.stringify(quickActions));
   }, [quickActions]);
 
-  // Auto-hide toast
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(""), 1800);
     return () => clearTimeout(t);
   }, [toast]);
 
-  const totalExp = useMemo(() => entries.reduce((s, e) => s + (Number(e.exp) || 0), 0), [entries]);
+  const totalExp = useMemo(
+    () => entries.reduce((s, e) => s + (Number(e.exp) || 0), 0),
+    [entries]
+  );
 
   const { level, expIntoLevel, expToNext } = useMemo(() => {
     let lvl = 1;
@@ -132,6 +198,7 @@ export default function App() {
   }, [expIntoLevel, expToNext]);
 
   const todayKey = formatDateKey(Date.now());
+
   const expToday = useMemo(() => {
     return entries
       .filter((e) => formatDateKey(e.ts) === todayKey)
@@ -146,7 +213,9 @@ export default function App() {
       const d = new Date(now);
       d.setDate(now.getDate() - i);
       const key = formatDateKey(d.getTime());
-      const sum = entries.filter((e) => formatDateKey(e.ts) === key).reduce((s, e) => s + (Number(e.exp) || 0), 0);
+      const sum = entries
+        .filter((e) => formatDateKey(e.ts) === key)
+        .reduce((s, e) => s + (Number(e.exp) || 0), 0);
       days.push({ key, label: shortMD(d.getTime()), exp: sum });
     }
     const max = Math.max(1, ...days.map((x) => x.exp));
@@ -191,7 +260,7 @@ export default function App() {
     const entry = { id: uid(), name: cleanName, exp: numExp, ts: Date.now() };
     setEntries((prev) => [entry, ...prev]);
 
-    // Dodaj/aktualizuj do Szybkich akcji (to jest to “pole obok Post/Śpiew”)
+    // Dodaj/aktualizuj w szybkich akcjach
     setQuickActions((prev) => {
       const idx = prev.findIndex((q) => q.name.toLowerCase() === cleanName.toLowerCase());
       if (idx >= 0) {
@@ -325,44 +394,17 @@ export default function App() {
           <div className="sectionTitle outline">Szybkie akcje</div>
 
           <div className="quickWrap">
-            {quickActions.map((q) => {
-              const lp = useLongPress({
-                ms: 2000,
-                onLongPress: () => setArmedQuickId(q.id)
-              });
-
-              return (
-                <button
-                  key={q.id}
-                  className={"chip outline " + (armedQuickId === q.id ? "chipArmed" : "")}
-                  onClick={() => {
-                    if (armedQuickId === q.id) return; // gdy uzbrojony, kliknięcie nie dodaje
-                    addEntry(q.name, q.exp);
-                  }}
-                  {...lp}
-                >
-                  <span className="chipName">{q.name}</span>
-                  <span className="chipExp">({q.exp})</span>
-                  <span className="chipIcon">⏳</span>
-
-                  {armedQuickId === q.id && (
-                    <span
-                      className="chipDelete"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        removeQuick(q.id);
-                      }}
-                      role="button"
-                      aria-label="Usuń szybką akcję"
-                      title="Usuń"
-                    >
-                      🗑️
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+            {quickActions.map((q) => (
+              <QuickChip
+                key={q.id}
+                q={q}
+                armed={armedQuickId === q.id}
+                onArm={(id) => setArmedQuickId(id)}
+                onCancelArm={() => setArmedQuickId(null)}
+                onUse={(item) => addEntry(item.name, item.exp)}
+                onDelete={(id) => removeQuick(id)}
+              />
+            ))}
           </div>
 
           <div className="row rowBottom">
@@ -472,39 +514,18 @@ export default function App() {
           </div>
 
           {entries.length === 0 ? (
-            <div className="empty outline">
-              Brak wpisów. Dodaj pierwszy EXP i wbijaj levele 😄
-            </div>
+            <div className="empty outline">Brak wpisów. Dodaj pierwszy EXP i wbijaj levele 😄</div>
           ) : (
             <div className="entriesList">
-              {entries.map((e) => {
-                const longPress = useLongPress({
-                  ms: 3000,
-                  onLongPress: () => setArmedEntryId(e.id)
-                });
-
-                return (
-                  <div key={e.id} className={"entry glass2 " + (armedEntryId === e.id ? "entryArmed" : "")} {...longPress}>
-                    <div className="entryLeft">
-                      <div className="entryName outline">{e.name}</div>
-                      <div className="entryMeta outline-soft">
-                        {new Date(e.ts).toLocaleString("pl-PL")}
-                      </div>
-                    </div>
-
-                    <div className="entryRight">
-                      <div className="entryExp outline">+{e.exp}</div>
-                      <div className="entryTag outline-soft">EXP</div>
-                    </div>
-
-                    {armedEntryId === e.id && (
-                      <button className="entryDelete outline" onClick={() => removeEntry(e.id)}>
-                        🗑️ Usuń
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
+              {entries.map((e) => (
+                <EntryCard
+                  key={e.id}
+                  e={e}
+                  armed={armedEntryId === e.id}
+                  onArm={(id) => setArmedEntryId(id)}
+                  onDelete={(id) => removeEntry(id)}
+                />
+              ))}
             </div>
           )}
 
