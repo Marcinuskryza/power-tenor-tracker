@@ -83,7 +83,7 @@ a{ color:inherit; }
   color: white;
 
   /* dynamiczna grubość zależna od fontu */
-  -webkit-text-stroke: clamp(1px, 0.08em, 3px) var(--stroke-color);
+  -webkit-text-stroke: clamp(0.5px, 0.05em, 2px) var(--stroke-color);
 
   /* delikatny cień głębi */
   text-shadow:
