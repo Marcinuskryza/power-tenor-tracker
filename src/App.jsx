@@ -72,7 +72,7 @@ function useLongPress({ onLongPress, ms = 3000, disabled = false }) {
 
 function QuickChip({ q, armed, onArm, onCancelArm, onUse, onDelete }) {
   const lp = useLongPress({
-    ms: 2000,
+    ms: 1000,
     onLongPress: () => onArm(q.id)
   });
 
@@ -110,7 +110,7 @@ function QuickChip({ q, armed, onArm, onCancelArm, onUse, onDelete }) {
 
 function EntryCard({ e, armed, onArm, onDelete }) {
   const lp = useLongPress({
-    ms: 3000,
+    ms: 1000,
     onLongPress: () => onArm(e.id)
   });
 
