@@ -272,10 +272,7 @@ body{
   color: white;
   -webkit-text-stroke: 0.5px black;
   text-shadow:
-    2px 2px 0 black,
-    -2px 2px 0 black,
-    2px -2px 0 black,
-    -2px -2px 0 black;
+
 }
 
 .chipExp {
@@ -284,10 +281,7 @@ body{
   color: white;
   -webkit-text-stroke: 0.5px black;
   text-shadow:
-    2px 2px 0 black,
-    -2px 2px 0 black,
-    2px -2px 0 black,
-    -2px -2px 0 black;
+
 }
 .chipIcon{ opacity:.85; }
 
