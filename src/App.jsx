@@ -37,7 +37,6 @@ function clamp(n, a, b) {
 }
 
 function daysBetween(dateKeyA, dateKeyB) {
-  // dateKey: YYYY-MM-DD
   const [ya, ma, da] = dateKeyA.split("-").map(Number);
   const [yb, mb, db] = dateKeyB.split("-").map(Number);
   const a = new Date(ya, ma - 1, da);
@@ -51,7 +50,6 @@ function daysBetween(dateKeyA, dateKeyB) {
 /** ---------- RANGI (na bazie Rank XP) ---------- */
 function getRank(rankXP) {
   const xp = Math.max(0, Math.floor(rankXP));
-
   if (xp >= 50000) return { name: "MASTER TENOR", tier: "master", min: 50000 };
   if (xp >= 20000) return { name: "DIAMOND TENOR", tier: "diamond", min: 20000 };
   if (xp >= 8000) return { name: "GOLD ARTIST", tier: "gold", min: 8000 };
@@ -59,7 +57,16 @@ function getRank(rankXP) {
   return { name: "BRONZE VOCALIST", tier: "bronze", min: 0 };
 }
 
-/** ---------- Long press – stabilnie na mobile ---------- */
+/** ---------- Diminishing returns (w tym samym dniu) ---------- */
+function diminishingMultiplier(timesAlreadyDoneToday) {
+  // timesAlreadyDoneToday = ile razy ta aktywność była już wykonana DZISIAJ (przed dodaniem)
+  if (timesAlreadyDoneToday <= 0) return 1.0;   // 1 raz
+  if (timesAlreadyDoneToday === 1) return 0.9;  // 2 raz
+  if (timesAlreadyDoneToday === 2) return 0.75; // 3 raz
+  return 0.5;                                   // 4+ raz
+}
+
+/** ---------- Long press ---------- */
 function useLongPress({ onLongPress, ms = 3000, disabled = false }) {
   const timer = useRef(null);
   const active = useRef(false);
@@ -142,6 +149,11 @@ function EntryCard({ e, armed, onArm, onDelete, longPressMs = 3000 }) {
       <div className="entryLeft">
         <div className="entryName outline">{e.name}</div>
         <div className="entryMeta outline-soft">{new Date(e.ts).toLocaleString("pl-PL")}</div>
+        {typeof e.baseExp === "number" && e.baseExp !== e.exp ? (
+          <div className="entryMeta outline-soft">
+            base {e.baseExp} → gained {e.exp} (×{e.mult})
+          </div>
+        ) : null}
       </div>
 
       <div className="entryRight">
@@ -161,10 +173,10 @@ function EntryCard({ e, armed, onArm, onDelete, longPressMs = 3000 }) {
 /* ---------------------- APP ---------------------- */
 
 export default function App() {
-  const LS_ENTRIES = "ptt_entries_v6";
-  const LS_QUICK = "ptt_quick_v6";
-  const LS_RANK_XP = "ptt_rank_xp_v1";
-  const LS_LAST_CHECK = "ptt_last_check_v1";
+  const LS_ENTRIES = "ptt_entries_v7";
+  const LS_QUICK = "ptt_quick_v7";
+  const LS_RANK_XP = "ptt_rank_xp_v2";
+  const LS_LAST_CHECK = "ptt_last_check_v2";
 
   const [entries, setEntries] = useState(() =>
     safeJsonParse(localStorage.getItem(LS_ENTRIES), [])
@@ -177,7 +189,6 @@ export default function App() {
     ])
   );
 
-  // Rank XP jest osobny (do degradacji)
   const [rankXP, setRankXP] = useState(() => {
     const v = Number(localStorage.getItem(LS_RANK_XP) ?? 0);
     return Number.isFinite(v) ? v : 0;
@@ -204,17 +215,15 @@ export default function App() {
 
   useEffect(() => {
     if (!toast) return;
-    const t = setTimeout(() => setToast(""), 2000);
+    const t = setTimeout(() => setToast(""), 2200);
     return () => clearTimeout(t);
   }, [toast]);
 
-  // Total EXP (historyczny)
   const totalExp = useMemo(
     () => entries.reduce((s, e) => s + (Number(e.exp) || 0), 0),
     [entries]
   );
 
-  // Level (z Total EXP – zostaje jak było)
   const { level, expIntoLevel, expToNext } = useMemo(() => {
     let lvl = 1;
     let remaining = totalExp;
@@ -234,10 +243,8 @@ export default function App() {
     return clamp((expIntoLevel / expToNext) * 100, 0, 100);
   }, [expIntoLevel, expToNext]);
 
-  // Rank info
   const rank = useMemo(() => getRank(rankXP), [rankXP]);
 
-  // EXP dziś (dla raportu)
   const todayKey = formatDateKey(Date.now());
   const expToday = useMemo(() => {
     return entries
@@ -245,7 +252,6 @@ export default function App() {
       .reduce((s, e) => s + (Number(e.exp) || 0), 0);
   }, [entries, todayKey]);
 
-  // Ostatnie 7 dni
   const last7 = useMemo(() => {
     const days = [];
     const now = new Date();
@@ -285,91 +291,117 @@ export default function App() {
     return arr.slice(0, 3);
   }, [entries]);
 
-  /** ---------- DEGRADACJA RANGI ZA BRAK AKTYWNOŚCI ---------- */
+  /** ---------- SYSTEM OCHRONY + DEGRADACJA ---------- */
   useEffect(() => {
-    // odpal po załadowaniu entries + rankXP
     const today = formatDateKey(Date.now());
     const lastCheck = localStorage.getItem(LS_LAST_CHECK);
 
-    // jeśli pierwsze uruchomienie
     if (!lastCheck) {
       localStorage.setItem(LS_LAST_CHECK, today);
       return;
     }
 
-    // ile dni minęło od ostatniego sprawdzenia
     const gap = daysBetween(lastCheck, today);
     if (gap <= 0) return;
 
-    // mapa aktywnych dni (czy był jakikolwiek wpis)
     const activeDays = new Set(entries.map((e) => formatDateKey(e.ts)));
 
     let newRankXP = rankXP;
     let penalizedDays = 0;
 
-    // sprawdzamy dni pomiędzy lastCheck -> today (bez today)
-    // np. lastCheck = 2026-02-24, today=2026-02-25 => sprawdzamy 2026-02-24? NIE, bo to dzień checka
-    // sprawdzamy: lastCheck+1 ... today-1
-    for (let i = 1; i <= gap - 0; i++) {
+    // liczymy dni pomiędzy, nie karzemy dzisiejszego dnia
+    for (let i = 1; i <= gap; i++) {
       const d = new Date(lastCheck + "T12:00:00");
       d.setDate(d.getDate() + i);
       const key = formatDateKey(d.getTime());
-      if (key === today) break; // nie karzemy dzisiejszego dnia
+      if (key === today) break;
 
       if (!activeDays.has(key)) {
-        // kara: max(80, 3% obecnego RankXP)
-        const penalty = Math.max(80, Math.round(newRankXP * 0.03));
-        newRankXP = Math.max(0, newRankXP - penalty);
         penalizedDays += 1;
+
+        // ✅ OCHRONA: 1. dzień łagodnie, 2. średnio, 3+ normalnie
+        let pct = 0.03;
+        let minPenalty = 80;
+
+        if (penalizedDays === 1) {
+          pct = 0.01;
+          minPenalty = 30;
+        } else if (penalizedDays === 2) {
+          pct = 0.02;
+          minPenalty = 60;
+        } else {
+          pct = 0.03;
+          minPenalty = 80;
+        }
+
+        const penalty = Math.max(minPenalty, Math.round(newRankXP * pct));
+        newRankXP = Math.max(0, newRankXP - penalty);
       }
     }
 
-    // ustawiamy last check na dziś
     localStorage.setItem(LS_LAST_CHECK, today);
 
     if (penalizedDays > 0 && newRankXP !== rankXP) {
       setRankXP(newRankXP);
-      setToast(`Brak aktywności: -${penalizedDays} dzień/dni → spadek Rank XP`);
+      setToast(`Brak aktywności: -${penalizedDays} dzień/dni → Rank XP spadł`);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entries]); // entries zmienia się przy starcie i dodawaniu, więc to wystarczy
+  }, [entries]);
 
   function addEntry(activityName, activityExp) {
     const cleanName = (activityName || "").trim();
-    const numExp = Number(activityExp);
+    const baseExp = Number(activityExp);
 
     if (!cleanName) {
       setToast("Podaj nazwę aktywności 🙂");
       return;
     }
-    if (!Number.isFinite(numExp) || numExp <= 0) {
+    if (!Number.isFinite(baseExp) || baseExp <= 0) {
       setToast("EXP musi być liczbą > 0 🙂");
       return;
     }
 
-    const entry = { id: uid(), name: cleanName, exp: numExp, ts: Date.now() };
+    // ✅ diminishing returns: ile razy ta aktywność była już DZISIAJ?
+    const doneToday = entries.filter(
+      (e) => formatDateKey(e.ts) === todayKey && (e.name || "").toLowerCase() === cleanName.toLowerCase()
+    ).length;
+
+    const mult = diminishingMultiplier(doneToday);
+    const gainedExp = Math.max(1, Math.round(baseExp * mult));
+
+    const entry = {
+      id: uid(),
+      name: cleanName,
+      exp: gainedExp,     // gained (po modyfikatorze)
+      baseExp: baseExp,   // bazowe (dla info)
+      mult: mult,         // mnożnik
+      ts: Date.now(),
+    };
+
     setEntries((prev) => [entry, ...prev]);
+    setRankXP((prev) => prev + gainedExp);
 
-    // Rank XP rośnie razem z aktywnością
-    setRankXP((prev) => prev + numExp);
-
-    // Dodaj/aktualizuj w szybkich akcjach
+    // aktualizuj quick actions (z bazowym exp, żeby preset trzymał “normalną wartość”)
     setQuickActions((prev) => {
       const idx = prev.findIndex((q) => q.name.toLowerCase() === cleanName.toLowerCase());
       if (idx >= 0) {
         const copy = [...prev];
-        copy[idx] = { ...copy[idx], exp: numExp, name: cleanName };
+        copy[idx] = { ...copy[idx], exp: baseExp, name: cleanName };
         return copy;
       }
-      return [...prev, { id: uid(), name: cleanName, exp: numExp }];
+      return [...prev, { id: uid(), name: cleanName, exp: baseExp }];
     });
 
-    // aktualizuj last_check na dziś (żeby nie karało przez “wczoraj” po dodaniu)
     localStorage.setItem(LS_LAST_CHECK, formatDateKey(Date.now()));
 
     setName("");
     setExp("");
-    setToast(`+${numExp} EXP ✅ (Rank XP +${numExp})`);
+
+    if (mult < 1) {
+      setToast(`+${gainedExp} EXP ✅ (base ${baseExp} ×${mult})`);
+    } else {
+      setToast(`+${gainedExp} EXP ✅`);
+    }
   }
 
   function clearAll() {
@@ -446,7 +478,6 @@ export default function App() {
           </div>
         </header>
 
-        {/* LEVEL + RANK CARD */}
         <section className="card glass levelCard">
           <div className="levelTop" style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "space-between" }}>
             <div className="levelBadge">
@@ -474,25 +505,11 @@ export default function App() {
           </div>
         </section>
 
-        {/* ADD CARD */}
         <section className="card glass">
           <div className="form">
-            <input
-              className="input"
-              placeholder="Nazwa aktywności"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              inputMode="text"
-            />
-
+            <input className="input" placeholder="Nazwa aktywności" value={name} onChange={(e) => setName(e.target.value)} />
             <div className="row">
-              <input
-                className="input"
-                placeholder="EXP (np. 40)"
-                value={exp}
-                onChange={(e) => setExp(e.target.value)}
-                inputMode="numeric"
-              />
+              <input className="input" placeholder="EXP (np. 40)" value={exp} onChange={(e) => setExp(e.target.value)} inputMode="numeric" />
               <button className="btn primary outline" onClick={() => addEntry(name, exp)}>
                 + DODAJ
               </button>
@@ -528,11 +545,10 @@ export default function App() {
           </div>
 
           <div className="hint outline-soft">
-            Tip: przytrzymaj <b>2s</b> kafelek szybkiej akcji, żeby pojawiło się 🗑️
+            Diminishing returns: ta sama czynność w 1 dzień daje mniej EXP po kolejnych powtórzeniach.
           </div>
         </section>
 
-        {/* REPORT CARD */}
         <section className="card glass">
           <div className="reportTop">
             <div className="sectionTitle outline">Raport</div>
@@ -576,7 +592,6 @@ export default function App() {
           </div>
         </section>
 
-        {/* ENTRIES */}
         <section className="entries">
           <div className="entriesHeader">
             <div className="sectionTitle outline">Historia</div>
@@ -603,10 +618,6 @@ export default function App() {
               ))}
             </div>
           )}
-
-          <div className="hint outline-soft">
-            Tip: przytrzymaj wpis <b>3s</b>, żeby pojawił się przycisk 🗑️
-          </div>
         </section>
 
         {toast && <div className="toast outline">{toast}</div>}
