@@ -61,7 +61,10 @@ function normalizeState(raw) {
     totalXP: Number.isFinite(totalXP) ? totalXP : 0,
     rankRP: Number.isFinite(rankRP) ? rankRP : 0,
     entries: Array.isArray(obj.entries) ? obj.entries : [],
-    quickActions: Array.isArray(obj.quickActions) && obj.quickActions.length > 0 ? obj.quickActions : DEFAULT_QUICK_ACTIONS,
+    quickActions:
+      Array.isArray(obj.quickActions) && obj.quickActions.length > 0
+        ? obj.quickActions
+        : DEFAULT_QUICK_ACTIONS,
     dailyCounts: obj.dailyCounts && typeof obj.dailyCounts === "object" ? obj.dailyCounts : {},
     lastSeenDay: typeof obj.lastSeenDay === "string" ? obj.lastSeenDay : todayKey(),
     createdAt: Number.isFinite(Number(obj.createdAt)) ? obj.createdAt : Date.now()
@@ -89,7 +92,9 @@ class ErrorBoundary extends React.Component {
           <div className="shell">
             <div className="card">
               <div className="stroke title">Ups… coś się wysypało 😵</div>
-              <p className="notice">Kliknij reset, żeby wrócić do działania (czyści dane lokalne).</p>
+              <p className="notice">
+                Kliknij reset, żeby wrócić do działania (czyści dane lokalne).
+              </p>
               <div className="errorBox">
                 <div className="small">Błąd:</div>
                 <div style={{ fontWeight: 900 }}>{this.state.message}</div>
@@ -156,7 +161,7 @@ function useLongPress({ onLongPress, onClick, ms = 1000 }) {
 }
 
 /**
- * ====== KOMPONENTY (HOOKI TUTAJ, NIE W .map()) ======
+ * ====== KOMPONENTY (HOOKI SĄ TUTAJ, NIE W .map()) ======
  */
 function QuickActionChip({ qa, isRevealed, onClick, onRevealDelete, onDelete }) {
   const lp = useLongPress({
@@ -283,7 +288,10 @@ function InnerApp() {
   const levelProgressXP = useMemo(() => state.totalXP - levelBase, [state.totalXP, levelBase]);
   const nextLevelAt = useMemo(() => level * LEVEL_STEP, [level]);
   const toNext = useMemo(() => nextLevelAt - state.totalXP, [nextLevelAt, state.totalXP]);
-  const progressPct = useMemo(() => clamp((levelProgressXP / LEVEL_STEP) * 100, 0, 100), [levelProgressXP]);
+  const progressPct = useMemo(
+    () => clamp((levelProgressXP / LEVEL_STEP) * 100, 0, 100),
+    [levelProgressXP]
+  );
 
   const rank = useMemo(() => getRankFromRP(state.rankRP), [state.rankRP]);
   const rankNext = useMemo(() => getNextRank(rank), [rank]);
@@ -293,12 +301,16 @@ function InnerApp() {
   }, [rankNext, state.rankRP]);
 
   const today = todayKey();
-  const todayEntries = useMemo(() => (Array.isArray(state.entries) ? state.entries : []).filter((e) => e.dateKey === today), [state.entries, today]);
-  const xpToday = useMemo(() => todayEntries.reduce((a, e) => a + (Number(e.gainedExp) || 0), 0), [todayEntries]);
+  const entriesArr = Array.isArray(state.entries) ? state.entries : [];
+  const todayEntries = useMemo(() => entriesArr.filter((e) => e.dateKey === today), [entriesArr, today]);
+  const xpToday = useMemo(
+    () => todayEntries.reduce((a, e) => a + (Number(e.gainedExp) || 0), 0),
+    [todayEntries]
+  );
 
-  const last7 = useMemo(() => buildLast7Days(Array.isArray(state.entries) ? state.entries : []), [state.entries]);
-  const topByXP = useMemo(() => computeTop(Array.isArray(state.entries) ? state.entries : [], "xp"), [state.entries]);
-  const topByCount = useMemo(() => computeTop(Array.isArray(state.entries) ? state.entries : [], "count"), [state.entries]);
+  const last7 = useMemo(() => buildLast7Days(entriesArr), [entriesArr]);
+  const topByXP = useMemo(() => computeTop(entriesArr, "xp"), [entriesArr]);
+  const topByCount = useMemo(() => computeTop(entriesArr, "count"), [entriesArr]);
 
   function addEntry({ name, baseExp }) {
     const cleanName = (name || "").trim();
@@ -357,11 +369,11 @@ function InnerApp() {
     setState((prev) => {
       const s = normalizeState(prev);
 
-      const entriesArr = Array.isArray(s.entries) ? s.entries : [];
-      const entry = entriesArr.find((e) => e.id === id);
+      const arr = Array.isArray(s.entries) ? s.entries : [];
+      const entry = arr.find((e) => e.id === id);
       if (!entry) return s;
 
-      const newEntries = entriesArr.filter((e) => e.id !== id);
+      const newEntries = arr.filter((e) => e.id !== id);
       const gainedRP = Math.max(1, Math.round((Number(entry.gainedExp) || 0) * 0.6));
 
       const totalXP = Math.max(0, s.totalXP - (Number(entry.gainedExp) || 0));
@@ -372,7 +384,13 @@ function InnerApp() {
       const dayObj = { ...(s.dailyCounts?.[dKey] || {}) };
       if (dayObj[key]) dayObj[key] = Math.max(0, dayObj[key] - 1);
 
-      return { ...s, entries: newEntries, totalXP, rankRP, dailyCounts: { ...s.dailyCounts, [dKey]: dayObj } };
+      return {
+        ...s,
+        entries: newEntries,
+        totalXP,
+        rankRP,
+        dailyCounts: { ...s.dailyCounts, [dKey]: dayObj }
+      };
     });
     setRevealDelete({ type: null, id: null });
   }
@@ -400,7 +418,10 @@ function InnerApp() {
       const exists = qas.some((qa) => (qa?.name || "").toLowerCase() === key);
       if (exists) return s;
 
-      return { ...s, quickActions: [...qas, { id: "qa_" + uid(), name: cleanName, exp: nExp, icon: "⏳" }] };
+      return {
+        ...s,
+        quickActions: [...qas, { id: "qa_" + uid(), name: cleanName, exp: nExp, icon: "⏳" }]
+      };
     });
   }
 
@@ -430,7 +451,7 @@ function InnerApp() {
     last7.forEach((d) => lines.push(`- ${d.label}: ${d.value}`));
     lines.push("");
     lines.push("Top (EXP):");
-    computeTop(Array.isArray(state.entries) ? state.entries : [], "xp")
+    computeTop(entriesArr, "xp")
       .slice(0, 5)
       .forEach((t, i) => lines.push(`${i + 1}. ${t.name} — ${t.xp} EXP (${t.count}x)`));
 
@@ -466,6 +487,7 @@ function InnerApp() {
         </div>
 
         <div className="grid">
+          {/* LEWA KARTA: dodawanie + szybkie akcje */}
           <div className="card" data-keep>
             <div className="hudTop">
               <div className="badge">
@@ -588,28 +610,9 @@ function InnerApp() {
                 + DODAJ
               </button>
             </div>
-
-            <hr className="hr" />
-
-            <div className="sectionTitle stroke">Historia</div>
-            {(Array.isArray(state.entries) ? state.entries : []).length === 0 ? (
-              <div className="notice stroke">Brak wpisów. Dodaj pierwszy EXP i wbijaj levele 😄</div>
-            ) : (
-              <div className="list">
-                {(Array.isArray(state.entries) ? state.entries : []).map((e) => (
-                  <EntryItem
-                    key={e.id}
-                    entry={e}
-                    isRevealed={revealDelete.type === "entry" && revealDelete.id === e.id}
-                    onRevealDelete={(id) => setRevealDelete({ type: "entry", id })}
-                    onDelete={removeEntry}
-                    onTap={() => setRevealDelete({ type: null, id: null })}
-                  />
-                ))}
-              </div>
-            )}
           </div>
 
+          {/* PRAWA KARTA: raport + historia POD raportem */}
           <div className="card" data-keep>
             <div className="flexBetween">
               <div className="sectionTitle stroke" style={{ margin: 0 }}>
@@ -623,7 +626,7 @@ function InnerApp() {
             <div className="reportGrid" style={{ marginTop: 10 }}>
               <div className="statBox">
                 <div className="statLabel stroke">Wpisy</div>
-                <div className="statValue stroke">{(Array.isArray(state.entries) ? state.entries : []).length}</div>
+                <div className="statValue stroke">{entriesArr.length}</div>
               </div>
               <div className="statBox">
                 <div className="statLabel stroke">EXP dziś</div>
@@ -651,13 +654,21 @@ function InnerApp() {
                 <div className="stroke" style={{ fontWeight: 900, marginBottom: 8 }}>
                   Top (EXP)
                 </div>
-                {topByXP.length === 0 ? <div className="notice stroke">Brak danych</div> : <TopList items={topByXP.slice(0, 6)} mode="xp" />}
+                {topByXP.length === 0 ? (
+                  <div className="notice stroke">Brak danych</div>
+                ) : (
+                  <TopList items={topByXP.slice(0, 6)} mode="xp" />
+                )}
               </div>
               <div className="statBox">
                 <div className="stroke" style={{ fontWeight: 900, marginBottom: 8 }}>
                   Top (ilość)
                 </div>
-                {topByCount.length === 0 ? <div className="notice stroke">Brak danych</div> : <TopList items={topByCount.slice(0, 6)} mode="count" />}
+                {topByCount.length === 0 ? (
+                  <div className="notice stroke">Brak danych</div>
+                ) : (
+                  <TopList items={topByCount.slice(0, 6)} mode="count" />
+                )}
               </div>
             </div>
 
@@ -665,6 +676,27 @@ function InnerApp() {
               Anty-farm: powtarzanie tej samej czynności w ciągu dnia daje mniej EXP. <br />
               Motywacja: brak aktywności → RP spada lekko (ranga może spaść).
             </div>
+
+            <hr className="hr" />
+
+            {/* HISTORIA POD RAPORTEM */}
+            <div className="sectionTitle stroke">Historia</div>
+            {entriesArr.length === 0 ? (
+              <div className="notice stroke">Brak wpisów. Dodaj pierwszy EXP i wbijaj levele 😄</div>
+            ) : (
+              <div className="list">
+                {entriesArr.map((e) => (
+                  <EntryItem
+                    key={e.id}
+                    entry={e}
+                    isRevealed={revealDelete.type === "entry" && revealDelete.id === e.id}
+                    onRevealDelete={(id) => setRevealDelete({ type: "entry", id })}
+                    onDelete={removeEntry}
+                    onTap={() => setRevealDelete({ type: null, id: null })}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -707,7 +739,9 @@ function buildLast7Days(entries) {
     const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
     const key = todayKey(d);
     const label = key.slice(5);
-    const value = entries.filter((e) => e.dateKey === key).reduce((a, e) => a + (Number(e.gainedExp) || 0), 0);
+    const value = entries
+      .filter((e) => e.dateKey === key)
+      .reduce((a, e) => a + (Number(e.gainedExp) || 0), 0);
     out.push({ key, label, value });
   }
   return out;
@@ -744,15 +778,47 @@ function MiniLineChart({ data }) {
 
   return (
     <svg viewBox={`0 0 ${w} ${h}`} width="100%" height="auto" aria-label="Wykres 7 dni">
-      <path d={`M ${pad} ${h - pad} H ${w - pad}`} stroke="rgba(255,255,255,.18)" strokeWidth="2" fill="none" />
-      <path d={`M ${pad} ${pad} V ${h - pad}`} stroke="rgba(255,255,255,.10)" strokeWidth="2" fill="none" />
-      <path d={dPath} stroke="rgba(255,255,255,.92)" strokeWidth="4" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-      <path d={dPath} stroke="rgba(255,43,214,.55)" strokeWidth="10" fill="none" strokeLinecap="round" strokeLinejoin="round" opacity=".35" />
+      <path
+        d={`M ${pad} ${h - pad} H ${w - pad}`}
+        stroke="rgba(255,255,255,.18)"
+        strokeWidth="2"
+        fill="none"
+      />
+      <path
+        d={`M ${pad} ${pad} V ${h - pad}`}
+        stroke="rgba(255,255,255,.10)"
+        strokeWidth="2"
+        fill="none"
+      />
+      <path
+        d={dPath}
+        stroke="rgba(255,255,255,.92)"
+        strokeWidth="4"
+        fill="none"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d={dPath}
+        stroke="rgba(255,43,214,.55)"
+        strokeWidth="10"
+        fill="none"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        opacity=".35"
+      />
       {pts.map((p, idx) => (
         <g key={idx}>
           <circle cx={p.x} cy={p.y} r="6" fill="rgba(25,211,255,.9)" />
           <circle cx={p.x} cy={p.y} r="10" fill="rgba(25,211,255,.25)" />
-          <text x={p.x} y={h - 6} textAnchor="middle" fontSize="12" fill="rgba(255,255,255,.85)" style={{ fontWeight: 900 }}>
+          <text
+            x={p.x}
+            y={h - 6}
+            textAnchor="middle"
+            fontSize="12"
+            fill="rgba(255,255,255,.85)"
+            style={{ fontWeight: 900 }}
+          >
             {p.label}
           </text>
         </g>
