@@ -1,21 +1,18 @@
 :root{
-  --glass: rgba(255,255,255,.14);
+  --glass: rgba(255,255,255,.12);
   --glass2: rgba(255,255,255,.08);
-
-  --stroke-color: rgba(0,0,0,.85);
-  --txt: rgba(255,255,255,.96);
+  --stroke: rgba(0,0,0,.85);
+  --txt: rgba(255,255,255,.95);
   --muted: rgba(255,255,255,.75);
+  --line: rgba(255,255,255,.14);
 
   --pink:#ff2bd6;
   --violet:#7a2bff;
   --blue:#19d3ff;
 
   --radius: 22px;
+  --radius2: 18px;
 }
-
-/* ============================= */
-/* BASE */
-/* ============================= */
 
 *{ box-sizing:border-box; }
 
@@ -26,52 +23,24 @@ html,body{
 body{
   margin:0;
   color:var(--txt);
-  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans";
   overflow-x:hidden;
   min-height:100vh;
 
-  /* 🔥 CIEMNIEJSZE TŁO (minimalnie) */
+  /* 🔥 TŁO JAK MOLIP */
   background:
     linear-gradient(
       180deg,
-      #0d6f61 0%,     /* ciemniejszy turkus */
-      #187ea0 35%,    /* ciemniejszy niebieski */
-      #4f4fc4 65%,    /* ciemniejszy fiolet */
-      #9e0f90 100%    /* ciemniejszy róż */
+      #0f7f6e 0%,     /* turkus / zieleń */
+      #1e95b6 35%,    /* jasny niebieski */
+      #5b5bd6 65%,    /* fiolet */
+      #b012a5 100%    /* róż */
     );
 
   background-attachment: fixed;
 }
 
-/* ============================= */
-/* TYPOGRAFIA */
-/* ============================= */
-
-.title{
-  font-size: clamp(30px, 5vw, 44px);
-  font-weight: 900;
-  margin: 6px 0 4px;
-}
-
-.subtitle{
-  margin:0;
-  color: var(--muted);
-  font-weight: 700;
-}
-
-/* 🔥 DYNAMICZNY STROKE + LEKKI GLOW */
-
-.stroke{
-  color:white;
-
-  /* dynamiczna grubość zależna od wielkości fontu */
-  -webkit-text-stroke: clamp(1px, 0.08em, 3px) var(--stroke-color);
-
-  text-shadow:
-    0 0 8px rgba(255,255,255,.25),
-    0 0 18px rgba(122,43,255,.25),
-    0 6px 14px rgba(0,0,0,.35);
-}
+a{ color:inherit; }
 
 /* ============================= */
 /* LAYOUT */
@@ -86,6 +55,33 @@ body{
 
 .shell{
   width: min(980px, 100%);
+}
+
+.header{
+  padding: 6px 6px 14px;
+}
+
+.title{
+  font-size: clamp(30px, 5vw, 44px);
+  font-weight: 900;
+  letter-spacing: .6px;
+  margin: 6px 0 4px;
+}
+
+.subtitle{
+  margin:0;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.stroke{
+  color: white;
+  text-shadow:
+    -2px -2px 0 var(--stroke),
+     2px -2px 0 var(--stroke),
+    -2px  2px 0 var(--stroke),
+     2px  2px 0 var(--stroke),
+     0px  6px 14px rgba(0,0,0,.45);
 }
 
 /* ============================= */
@@ -128,7 +124,7 @@ body{
 .expBarWrap{
   margin-top: 12px;
   border-radius: 16px;
-  background: rgba(0,0,0,.28);
+  background: rgba(0,0,0,.25);
   border: 1px solid rgba(255,255,255,.14);
   padding: 10px;
 }
@@ -165,7 +161,7 @@ body{
   width:100%;
   border-radius: 18px;
   border: 1px solid rgba(255,255,255,.18);
-  background: rgba(0,0,0,.32);
+  background: rgba(0,0,0,.28);
   color: white;
   padding: 14px;
   outline:none;
@@ -200,22 +196,47 @@ body{
 }
 
 .btnSecondary{
-  background: rgba(0,0,0,.30);
+  background: rgba(0,0,0,.25);
   box-shadow:none;
 }
 
 /* ============================= */
-/* CHIPS + LISTA */
+/* CHIPS */
 /* ============================= */
 
-.chip,
+.chip{
+  padding: 12px 14px;
+  border-radius: 999px;
+  background: rgba(0,0,0,.25);
+  border: 1px solid rgba(255,255,255,.16);
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap: 10px;
+  cursor:pointer;
+  font-weight:900;
+}
+
+/* ============================= */
+/* LISTA */
+/* ============================= */
+
 .item{
   padding: 12px 14px;
   border-radius: 18px;
-  background: rgba(0,0,0,.30);
+  background: rgba(0,0,0,.25);
   border: 1px solid rgba(255,255,255,.14);
   display:flex;
   justify-content:space-between;
   align-items:center;
-  font-weight:900;
+}
+
+.itemName{
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.itemExp{
+  font-size: 18px;
+  font-weight: 900;
 }
