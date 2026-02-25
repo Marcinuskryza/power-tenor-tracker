@@ -1,627 +1,538 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-function safeJsonParse(value, fallback) {
+const LS_ENTRIES = "ptt_entries_v3";
+const LS_QUICK = "ptt_quick_v3";
+const LS_RANK_XP = "ptt_rankxp_v3";
+const LS_LAST_CHECK = "ptt_lastcheck_v3";
+
+const LONG_PRESS_MS = 1000; // <- TU zmieniasz czas przytrzymania (np. 1000 = 1s)
+
+function uid() {
+  return Math.random().toString(16).slice(2) + Date.now().toString(16);
+}
+
+function safeParse(json, fallback) {
   try {
-    const parsed = JSON.parse(value);
-    return parsed ?? fallback;
+    const v = JSON.parse(json);
+    return v ?? fallback;
   } catch {
     return fallback;
   }
 }
 
-function uid() {
-  return Math.random().toString(16).slice(2) + "-" + Date.now().toString(16);
+function todayKey(d = new Date()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const da = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${da}`;
 }
 
-function requiredExpForLevel(level) {
-  return 100 + (level - 1) * 50;
+function lastNDays(n = 7) {
+  const out = [];
+  const now = new Date();
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(now);
+    d.setDate(now.getDate() - i);
+    out.push(todayKey(d));
+  }
+  return out;
 }
 
-function formatDateKey(ts) {
-  const d = new Date(ts);
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
+function downloadTextFile(filename, text) {
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
-function shortMD(ts) {
-  const d = new Date(ts);
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${mm}-${dd}`;
-}
-
-function clamp(n, a, b) {
-  return Math.max(a, Math.min(b, n));
-}
-
-function daysBetween(dateKeyA, dateKeyB) {
-  const [ya, ma, da] = dateKeyA.split("-").map(Number);
-  const [yb, mb, db] = dateKeyB.split("-").map(Number);
-  const a = new Date(ya, ma - 1, da);
-  const b = new Date(yb, mb - 1, db);
-  a.setHours(12, 0, 0, 0);
-  b.setHours(12, 0, 0, 0);
-  const diff = b.getTime() - a.getTime();
-  return Math.floor(diff / (1000 * 60 * 60 * 24));
-}
-
-/** ---------- RANGI (na bazie Rank XP) ---------- */
-function getRank(rankXP) {
-  const xp = Math.max(0, Math.floor(rankXP));
-  if (xp >= 50000) return { name: "MASTER TENOR", tier: "master", min: 50000 };
-  if (xp >= 20000) return { name: "DIAMOND TENOR", tier: "diamond", min: 20000 };
-  if (xp >= 8000) return { name: "GOLD ARTIST", tier: "gold", min: 8000 };
-  if (xp >= 2000) return { name: "SILVER PERFORMER", tier: "silver", min: 2000 };
-  return { name: "BRONZE VOCALIST", tier: "bronze", min: 0 };
-}
-
-/** ---------- Diminishing returns (w tym samym dniu) ---------- */
-function diminishingMultiplier(timesAlreadyDoneToday) {
-  // timesAlreadyDoneToday = ile razy ta aktywność była już wykonana DZISIAJ (przed dodaniem)
-  if (timesAlreadyDoneToday <= 0) return 1.0;   // 1 raz
-  if (timesAlreadyDoneToday === 1) return 0.9;  // 2 raz
-  if (timesAlreadyDoneToday === 2) return 0.75; // 3 raz
-  return 0.5;                                   // 4+ raz
-}
-
-/** ---------- Long press ---------- */
-function useLongPress({ onLongPress, ms = 3000, disabled = false }) {
+function useLongPress({ onLongPress, onClick, ms = 1000 }) {
   const timer = useRef(null);
-  const active = useRef(false);
-
-  const clear = () => {
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = null;
-    active.current = false;
-  };
+  const longPressed = useRef(false);
 
   const start = () => {
-    if (disabled) return;
-    active.current = true;
-    timer.current = setTimeout(() => {
-      if (active.current) onLongPress?.();
-      clear();
+    longPressed.current = false;
+    timer.current = window.setTimeout(() => {
+      longPressed.current = true;
+      onLongPress?.();
     }, ms);
   };
 
-  const end = () => clear();
+  const clear = () => {
+    if (timer.current) window.clearTimeout(timer.current);
+    timer.current = null;
+  };
+
+  const end = () => {
+    clear();
+    if (!longPressed.current) onClick?.();
+  };
 
   return {
-    onMouseDown: start,
-    onMouseUp: end,
-    onMouseLeave: end,
-    onTouchStart: start,
-    onTouchEnd: end,
-    onTouchCancel: end,
+    onPointerDown: start,
+    onPointerUp: end,
+    onPointerLeave: clear,
+    onPointerCancel: clear,
   };
 }
 
-/* ---------------------- SUBKOMPONENTY ---------------------- */
-
-function QuickChip({ q, armed, onArm, onUse, onDelete, longPressMs = 2000 }) {
-  const lp = useLongPress({
-    ms: longPressMs,
-    onLongPress: () => onArm(q.id),
-  });
-
-  return (
-    <button
-      className={"chip " + (armed ? "chipArmed" : "")}
-      onClick={() => {
-        if (armed) return;
-        onUse(q);
-      }}
-      {...lp}
-    >
-      <span className="chipName outline">{q.name}</span>
-      <span className="chipExp outline">({q.exp})</span>
-      <span className="chipIcon">⏳</span>
-
-      {armed && (
-        <span
-          className="chipDelete"
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            onDelete(q.id);
-          }}
-          role="button"
-          aria-label="Usuń szybką akcję"
-          title="Usuń"
-        >
-          🗑️
-        </span>
-      )}
-    </button>
-  );
-}
-
-function EntryCard({ e, armed, onArm, onDelete, longPressMs = 3000 }) {
-  const lp = useLongPress({
-    ms: longPressMs,
-    onLongPress: () => onArm(e.id),
-  });
-
-  return (
-    <div className={"entry glass2 " + (armed ? "entryArmed" : "")} {...lp}>
-      <div className="entryLeft">
-        <div className="entryName outline">{e.name}</div>
-        <div className="entryMeta outline-soft">{new Date(e.ts).toLocaleString("pl-PL")}</div>
-        {typeof e.baseExp === "number" && e.baseExp !== e.exp ? (
-          <div className="entryMeta outline-soft">
-            base {e.baseExp} → gained {e.exp} (×{e.mult})
-          </div>
-        ) : null}
-      </div>
-
-      <div className="entryRight">
-        <div className="entryExp outline">+{e.exp}</div>
-        <div className="entryTag outline-soft">EXP</div>
-      </div>
-
-      {armed && (
-        <button className="entryDelete outline" onClick={() => onDelete(e.id)}>
-          🗑️ Usuń
-        </button>
-      )}
-    </div>
-  );
-}
-
-/* ---------------------- APP ---------------------- */
-
 export default function App() {
-  const LS_ENTRIES = "ptt_entries_v7";
-  const LS_QUICK = "ptt_quick_v7";
-  const LS_RANK_XP = "ptt_rank_xp_v2";
-  const LS_LAST_CHECK = "ptt_last_check_v2";
-
-  const [entries, setEntries] = useState(() =>
-    safeJsonParse(localStorage.getItem(LS_ENTRIES), [])
-  );
-
-  const [quickActions, setQuickActions] = useState(() =>
-    safeJsonParse(localStorage.getItem(LS_QUICK), [
-      { id: uid(), name: "Post", exp: 30 },
-      { id: uid(), name: "Śpiew", exp: 50 },
-    ])
-  );
-
-  const [rankXP, setRankXP] = useState(() => {
-    const v = Number(localStorage.getItem(LS_RANK_XP) ?? 0);
-    return Number.isFinite(v) ? v : 0;
-  });
+  const [title, setTitle] = useState("Power Tenor Tracker");
+  const [entries, setEntries] = useState([]);
+  const [quick, setQuick] = useState([
+    { id: "q1", name: "Post", exp: 30 },
+    { id: "q2", name: "Śpiew", exp: 50 },
+  ]);
 
   const [name, setName] = useState("");
   const [exp, setExp] = useState("");
+
   const [toast, setToast] = useState("");
+  const toastTimer = useRef(null);
 
   const [armedEntryId, setArmedEntryId] = useState(null);
   const [armedQuickId, setArmedQuickId] = useState(null);
 
+  const [rankXP, setRankXP] = useState(0);
+
+  // ---- Load
+  useEffect(() => {
+    const savedEntries = safeParse(localStorage.getItem(LS_ENTRIES), []);
+    const savedQuick = safeParse(localStorage.getItem(LS_QUICK), null);
+    const savedRank = safeParse(localStorage.getItem(LS_RANK_XP), 0);
+    if (Array.isArray(savedEntries)) setEntries(savedEntries);
+    if (Array.isArray(savedQuick) && savedQuick.length) setQuick(savedQuick);
+    if (typeof savedRank === "number") setRankXP(savedRank);
+  }, []);
+
+  // ---- Save
   useEffect(() => {
     localStorage.setItem(LS_ENTRIES, JSON.stringify(entries));
   }, [entries]);
 
   useEffect(() => {
-    localStorage.setItem(LS_QUICK, JSON.stringify(quickActions));
-  }, [quickActions]);
+    localStorage.setItem(LS_QUICK, JSON.stringify(quick));
+  }, [quick]);
 
   useEffect(() => {
-    localStorage.setItem(LS_RANK_XP, String(Math.max(0, Math.floor(rankXP))));
+    localStorage.setItem(LS_RANK_XP, JSON.stringify(rankXP));
   }, [rankXP]);
 
-  useEffect(() => {
-    if (!toast) return;
-    const t = setTimeout(() => setToast(""), 2200);
-    return () => clearTimeout(t);
-  }, [toast]);
+  function showToast(msg) {
+    setToast(msg);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(""), 1800);
+  }
 
-  const totalExp = useMemo(
-    () => entries.reduce((s, e) => s + (Number(e.exp) || 0), 0),
-    [entries]
-  );
+  const totalXP = useMemo(() => entries.reduce((s, e) => s + (Number(e.exp) || 0), 0), [entries]);
+  const level = useMemo(() => Math.floor(totalXP / 100) + 1, [totalXP]);
+  const inLevel = useMemo(() => totalXP % 100, [totalXP]);
+  const toNext = useMemo(() => 100 - inLevel, [inLevel]);
 
-  const { level, expIntoLevel, expToNext } = useMemo(() => {
-    let lvl = 1;
-    let remaining = totalExp;
-    while (true) {
-      const req = requiredExpForLevel(lvl);
-      if (remaining >= req) {
-        remaining -= req;
-        lvl += 1;
-        continue;
-      }
-      return { level: lvl, expIntoLevel: remaining, expToNext: req };
-    }
-  }, [totalExp]);
-
-  const progressPct = useMemo(() => {
-    if (expToNext <= 0) return 0;
-    return clamp((expIntoLevel / expToNext) * 100, 0, 100);
-  }, [expIntoLevel, expToNext]);
-
-  const rank = useMemo(() => getRank(rankXP), [rankXP]);
-
-  const todayKey = formatDateKey(Date.now());
   const expToday = useMemo(() => {
+    const tk = todayKey();
     return entries
-      .filter((e) => formatDateKey(e.ts) === todayKey)
+      .filter((e) => e.dayKey === tk)
       .reduce((s, e) => s + (Number(e.exp) || 0), 0);
-  }, [entries, todayKey]);
+  }, [entries]);
 
   const last7 = useMemo(() => {
-    const days = [];
+    const days = lastNDays(7);
+    const map = new Map(days.map((d) => [d, 0]));
+    for (const e of entries) {
+      if (map.has(e.dayKey)) map.set(e.dayKey, map.get(e.dayKey) + (Number(e.exp) || 0));
+    }
+    return days.map((d) => ({ day: d.slice(5), value: map.get(d) || 0 }));
+  }, [entries]);
+
+  const maxBar = useMemo(() => Math.max(10, ...last7.map((x) => x.value)), [last7]);
+
+  function addEntry(actionName, actionExp, alsoAddToQuick = true) {
+    const n = String(actionName || "").trim();
+    const v = Number(actionExp);
+
+    if (!n) return showToast("Podaj nazwę aktywności ✍️");
+    if (!Number.isFinite(v) || v <= 0) return showToast("Podaj poprawne EXP ✅");
+
     const now = new Date();
-    now.setHours(12, 0, 0, 0);
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(now);
-      d.setDate(now.getDate() - i);
-      const key = formatDateKey(d.getTime());
-      const sum = entries
-        .filter((e) => formatDateKey(e.ts) === key)
-        .reduce((s, e) => s + (Number(e.exp) || 0), 0);
-      days.push({ key, label: shortMD(d.getTime()), exp: sum });
-    }
-    const max = Math.max(1, ...days.map((x) => x.exp));
-    return { days, max };
-  }, [entries]);
-
-  const topByExp = useMemo(() => {
-    const map = new Map();
-    for (const e of entries) {
-      const k = (e.name || "").trim() || "Bez nazwy";
-      map.set(k, (map.get(k) || 0) + (Number(e.exp) || 0));
-    }
-    const arr = [...map.entries()].map(([name, exp]) => ({ name, exp }));
-    arr.sort((a, b) => b.exp - a.exp);
-    return arr.slice(0, 3);
-  }, [entries]);
-
-  const topByCount = useMemo(() => {
-    const map = new Map();
-    for (const e of entries) {
-      const k = (e.name || "").trim() || "Bez nazwy";
-      map.set(k, (map.get(k) || 0) + 1);
-    }
-    const arr = [...map.entries()].map(([name, count]) => ({ name, count }));
-    arr.sort((a, b) => b.count - a.count);
-    return arr.slice(0, 3);
-  }, [entries]);
-
-  /** ---------- SYSTEM OCHRONY + DEGRADACJA ---------- */
-  useEffect(() => {
-    const today = formatDateKey(Date.now());
-    const lastCheck = localStorage.getItem(LS_LAST_CHECK);
-
-    if (!lastCheck) {
-      localStorage.setItem(LS_LAST_CHECK, today);
-      return;
-    }
-
-    const gap = daysBetween(lastCheck, today);
-    if (gap <= 0) return;
-
-    const activeDays = new Set(entries.map((e) => formatDateKey(e.ts)));
-
-    let newRankXP = rankXP;
-    let penalizedDays = 0;
-
-    // liczymy dni pomiędzy, nie karzemy dzisiejszego dnia
-    for (let i = 1; i <= gap; i++) {
-      const d = new Date(lastCheck + "T12:00:00");
-      d.setDate(d.getDate() + i);
-      const key = formatDateKey(d.getTime());
-      if (key === today) break;
-
-      if (!activeDays.has(key)) {
-        penalizedDays += 1;
-
-        // ✅ OCHRONA: 1. dzień łagodnie, 2. średnio, 3+ normalnie
-        let pct = 0.03;
-        let minPenalty = 80;
-
-        if (penalizedDays === 1) {
-          pct = 0.01;
-          minPenalty = 30;
-        } else if (penalizedDays === 2) {
-          pct = 0.02;
-          minPenalty = 60;
-        } else {
-          pct = 0.03;
-          minPenalty = 80;
-        }
-
-        const penalty = Math.max(minPenalty, Math.round(newRankXP * pct));
-        newRankXP = Math.max(0, newRankXP - penalty);
-      }
-    }
-
-    localStorage.setItem(LS_LAST_CHECK, today);
-
-    if (penalizedDays > 0 && newRankXP !== rankXP) {
-      setRankXP(newRankXP);
-      setToast(`Brak aktywności: -${penalizedDays} dzień/dni → Rank XP spadł`);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entries]);
-
-  function addEntry(activityName, activityExp) {
-    const cleanName = (activityName || "").trim();
-    const baseExp = Number(activityExp);
-
-    if (!cleanName) {
-      setToast("Podaj nazwę aktywności 🙂");
-      return;
-    }
-    if (!Number.isFinite(baseExp) || baseExp <= 0) {
-      setToast("EXP musi być liczbą > 0 🙂");
-      return;
-    }
-
-    // ✅ diminishing returns: ile razy ta aktywność była już DZISIAJ?
-    const doneToday = entries.filter(
-      (e) => formatDateKey(e.ts) === todayKey && (e.name || "").toLowerCase() === cleanName.toLowerCase()
-    ).length;
-
-    const mult = diminishingMultiplier(doneToday);
-    const gainedExp = Math.max(1, Math.round(baseExp * mult));
-
     const entry = {
       id: uid(),
-      name: cleanName,
-      exp: gainedExp,     // gained (po modyfikatorze)
-      baseExp: baseExp,   // bazowe (dla info)
-      mult: mult,         // mnożnik
-      ts: Date.now(),
+      name: n,
+      exp: v,
+      ts: now.toISOString(),
+      dayKey: todayKey(now),
     };
 
     setEntries((prev) => [entry, ...prev]);
-    setRankXP((prev) => prev + gainedExp);
+    setRankXP((prev) => prev + v);
 
-    // aktualizuj quick actions (z bazowym exp, żeby preset trzymał “normalną wartość”)
-    setQuickActions((prev) => {
-      const idx = prev.findIndex((q) => q.name.toLowerCase() === cleanName.toLowerCase());
-      if (idx >= 0) {
-        const copy = [...prev];
-        copy[idx] = { ...copy[idx], exp: baseExp, name: cleanName };
-        return copy;
-      }
-      return [...prev, { id: uid(), name: cleanName, exp: baseExp }];
-    });
-
-    localStorage.setItem(LS_LAST_CHECK, formatDateKey(Date.now()));
+    // Dodaj też jako szybka akcja (pole obok "Post, Śpiew") – jeśli nie istnieje
+    if (alsoAddToQuick) {
+      setQuick((prev) => {
+        const exists = prev.some((q) => q.name.toLowerCase() === n.toLowerCase() && Number(q.exp) === v);
+        if (exists) return prev;
+        return [...prev, { id: uid(), name: n, exp: v }];
+      });
+    }
 
     setName("");
     setExp("");
-
-    if (mult < 1) {
-      setToast(`+${gainedExp} EXP ✅ (base ${baseExp} ×${mult})`);
-    } else {
-      setToast(`+${gainedExp} EXP ✅`);
-    }
+    showToast(`Dodano: ${n} (+${v})`);
   }
 
   function clearAll() {
     setEntries([]);
-    setToast("Wyczyszczono wpisy ✅");
-  }
-
-  function removeEntry(id) {
-    const found = entries.find((x) => x.id === id);
-    setEntries((prev) => prev.filter((e) => e.id !== id));
+    setRankXP(0);
     setArmedEntryId(null);
-    if (found) setRankXP((prev) => Math.max(0, prev - (Number(found.exp) || 0)));
-    setToast("Usunięto wpis 🗑️");
-  }
-
-  function removeQuick(id) {
-    setQuickActions((prev) => prev.filter((q) => q.id !== id));
     setArmedQuickId(null);
-    setToast("Usunięto szybką akcję 🗑️");
+
+    localStorage.removeItem(LS_ENTRIES);
+    localStorage.removeItem(LS_RANK_XP);
+    localStorage.removeItem(LS_LAST_CHECK);
+
+    showToast("Wyczyszczono wszystko ✅");
   }
 
-  function downloadStats() {
+  function deleteEntry(entryId) {
+    setEntries((prev) => prev.filter((e) => e.id !== entryId));
+    // rankXP celowo nie “cofamy” za historię, bo to byłby exploit.
+    // Jeśli chcesz: możemy odjąć exp usuniętego wpisu (powiedz).
+    showToast("Usunięto wpis 🗑️");
+  }
+
+  function deleteQuick(qid) {
+    setQuick((prev) => prev.filter((q) => q.id !== qid));
+    showToast("Usunięto szybką akcję 🗑️");
+  }
+
+  function downloadReport() {
     const lines = [];
-    lines.push("POWER TENOR TRACKER — RAPORT");
-    lines.push("--------------------------------");
-    lines.push(`Data: ${new Date().toLocaleString("pl-PL")}`);
+    lines.push(`RAPORT: ${title}`);
+    lines.push(`Data: ${new Date().toLocaleString()}`);
     lines.push("");
-    lines.push(`Total EXP (historyczne): ${totalExp}`);
-    lines.push(`Rank XP (do rangi): ${Math.floor(rankXP)}`);
-    lines.push(`Ranga: ${rank.name}`);
-    lines.push("");
-    lines.push(`Wpisy: ${entries.length}`);
+    lines.push(`LEVEL: ${level}`);
+    lines.push(`EXP łącznie: ${totalXP}`);
     lines.push(`EXP dziś: ${expToday}`);
-    lines.push(`Level: ${level}`);
-    lines.push(`Do następnego: ${Math.max(0, expToNext - expIntoLevel)} EXP`);
+    lines.push(`Do następnego: ${toNext} EXP`);
+    lines.push(`Rank XP: ${rankXP}`);
     lines.push("");
-    lines.push("Ostatnie 7 dni:");
-    for (const d of last7.days) lines.push(`- ${d.label}: ${d.exp} EXP`);
+    lines.push("Ostatnie 7 dni (EXP):");
+    for (const d of last7) lines.push(`- ${d.day}: ${d.value}`);
     lines.push("");
-    lines.push("Top (EXP):");
-    if (topByExp.length === 0) lines.push("- Brak danych");
-    for (const t of topByExp) lines.push(`- ${t.name}: ${t.exp} EXP`);
-    lines.push("");
-    lines.push("Top (ilość):");
-    if (topByCount.length === 0) lines.push("- Brak danych");
-    for (const t of topByCount) lines.push(`- ${t.name}: ${t.count}x`);
-    lines.push("");
-    lines.push("Szybkie akcje:");
-    if (quickActions.length === 0) lines.push("- Brak");
-    for (const q of quickActions) lines.push(`- ${q.name}: ${q.exp} EXP`);
+    lines.push("Ostatnie wpisy:");
+    entries.slice(0, 20).forEach((e) => {
+      lines.push(`- ${e.dayKey} | ${e.name} (+${e.exp})`);
+    });
 
-    const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `power-tenor-raport_${formatDateKey(Date.now())}.txt`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-
-    setTimeout(() => URL.revokeObjectURL(url), 1200);
-    setToast("Pobrano raport 📄");
+    downloadTextFile(`raport_${todayKey()}.txt`, lines.join("\n"));
+    showToast("Pobrano raport 📄");
   }
+
+  // ---------- UI
+  const progressPct = Math.round((inLevel / 100) * 100);
 
   return (
-    <div className="app">
-      <div className="bg" aria-hidden="true" />
-      <div className="shell">
-        <header className="header">
-          <div>
-            <h1 className="title outline">Power Tenor Tracker</h1>
-            <div className="subtitle outline-soft">EXP • levele • rangi • raport</div>
-          </div>
-        </header>
+    <div className="container">
+      <div className="header">
+        <h1 className="title outline">{title}</h1>
+        <p className="subtitle outline" style={{ opacity: 0.92 }}>
+          Wygląd jak gra RPG • EXP • levele
+        </p>
+      </div>
 
-        <section className="card glass levelCard">
-          <div className="levelTop" style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "space-between" }}>
-            <div className="levelBadge">
-              <span className="star">⭐</span>
-              <span className="outline">LEVEL {level}</span>
+      <div className="grid">
+        {/* STATUS */}
+        <div className="card">
+          <div className="cardTitleRow">
+            <div className="badge">
+              <span style={{ fontSize: 18 }}>⭐</span>
+              <span className="outline" style={{ fontSize: 18 }}>LEVEL {level}</span>
             </div>
-
-            <div className="levelBadge" title="Ranga liczona z Rank XP">
-              <span className="star">🏆</span>
-              <span className="outline">{rank.name}</span>
-            </div>
-
-            <div className="levelNumbers outline">
-              {Math.floor(expIntoLevel)}/{Math.floor(expToNext)} EXP
+            <div className="outline" style={{ fontSize: 20 }}>
+              {inLevel}/100 EXP
             </div>
           </div>
 
-          <div className="xpBar">
-            <div className="xpFill" style={{ width: `${progressPct}%` }} />
-            <div className="xpGloss" />
+          <div className="progressWrap" aria-label="progress">
+            <div className="progressFill" style={{ width: `${progressPct}%` }} />
           </div>
 
-          <div className="muted outline-soft">
-            Total EXP: <b>{totalExp}</b> • Rank XP: <b>{Math.floor(rankXP)}</b>
+          <div className="smallNote">
+            <span className="outline" style={{ opacity: 0.9 }}>
+              Total EXP: {totalXP}
+            </span>
           </div>
-        </section>
+        </div>
 
-        <section className="card glass">
-          <div className="form">
-            <input className="input" placeholder="Nazwa aktywności" value={name} onChange={(e) => setName(e.target.value)} />
-            <div className="row">
-              <input className="input" placeholder="EXP (np. 40)" value={exp} onChange={(e) => setExp(e.target.value)} inputMode="numeric" />
-              <button className="btn primary outline" onClick={() => addEntry(name, exp)}>
-                + DODAJ
-              </button>
-            </div>
+        {/* DODAWANIE */}
+        <div className="card">
+          <h2 className="sectionLabel outline">Dodaj EXP</h2>
+          <div className="row">
+            <input
+              className="input"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Nazwa aktywności (np. Ćwiczenie śpiewu)"
+            />
+            <input
+              className="input"
+              value={exp}
+              onChange={(e) => setExp(e.target.value.replace(/[^\d]/g, ""))}
+              placeholder="EXP (np. 40)"
+              inputMode="numeric"
+            />
+            <button
+              className="btn btnPrimary outline"
+              onClick={() => addEntry(name, exp, true)}
+            >
+              + DODAJ
+            </button>
           </div>
 
-          <div className="sectionTitle outline">Szybkie akcje</div>
+          <div style={{ height: 10 }} />
+
+          <h3 className="sectionLabel outline" style={{ fontSize: 22, marginTop: 8 }}>
+            Szybkie akcje
+          </h3>
 
           <div className="quickWrap">
-            {quickActions.map((q) => (
+            {quick.map((q) => (
               <QuickChip
                 key={q.id}
                 q={q}
                 armed={armedQuickId === q.id}
-                onArm={(id) => setArmedQuickId(id)}
-                onUse={(item) => addEntry(item.name, item.exp)}
-                onDelete={(id) => removeQuick(id)}
-                longPressMs={2000}
+                onAdd={() => addEntry(q.name, q.exp, false)}
+                onArm={() => {
+                  setArmedQuickId(q.id);
+                  showToast("Przytrzymaj jeszcze raz 1s, aby usunąć 🗑️");
+                }}
+                onDelete={() => deleteQuick(q.id)}
+                longPressMs={LONG_PRESS_MS}
               />
             ))}
           </div>
 
-          <div className="row rowBottom">
-            <button className="btn danger outline" onClick={clearAll}>
-              Wyczyść wszystko
-            </button>
+          <div style={{ height: 12 }} />
 
-            {armedQuickId && (
-              <button className="btn ghost outline" onClick={() => setArmedQuickId(null)}>
-                Anuluj usuwanie
-              </button>
-            )}
-          </div>
+          <button className="btn outline" onClick={clearAll}>
+            Wyczyść wszystko
+          </button>
+        </div>
 
-          <div className="hint outline-soft">
-            Diminishing returns: ta sama czynność w 1 dzień daje mniej EXP po kolejnych powtórzeniach.
-          </div>
-        </section>
-
-        <section className="card glass">
-          <div className="reportTop">
-            <div className="sectionTitle outline">Raport</div>
-            <button className="btn staty outline" onClick={downloadStats} title="Pobierz raport .txt">
+        {/* RAPORT */}
+        <div className="card">
+          <div className="cardTitleRow">
+            <h2 className="cardTitle outline">Raport</h2>
+            <button className="btn outline" onClick={downloadReport} title="Pobierz raport tekstowy">
               🎮 STATY
             </button>
           </div>
 
-          <div className="grid2">
-            <div className="mini glass2">
-              <div className="miniLabel outline-soft">Wpisy</div>
-              <div className="miniValue outline">{entries.length}</div>
+          <div className="split2">
+            <div className="statBox">
+              <div className="statLabel outline">Wpisy</div>
+              <p className="statValue outline">{entries.length}</p>
             </div>
-            <div className="mini glass2">
-              <div className="miniLabel outline-soft">EXP dziś</div>
-              <div className="miniValue outline">{expToday}</div>
+            <div className="statBox">
+              <div className="statLabel outline">EXP dziś</div>
+              <p className="statValue outline">{expToday}</p>
             </div>
-            <div className="mini glass2">
-              <div className="miniLabel outline-soft">Ranga</div>
-              <div className="miniValue outline" style={{ fontSize: 18 }}>{rank.name}</div>
+            <div className="statBox">
+              <div className="statLabel outline">Level</div>
+              <p className="statValue outline">{level}</p>
             </div>
-            <div className="mini glass2">
-              <div className="miniLabel outline-soft">Rank XP</div>
-              <div className="miniValue outline">{Math.floor(rankXP)}</div>
+            <div className="statBox">
+              <div className="statLabel outline">Do następnego</div>
+              <p className="statValue outline">{toNext} EXP</p>
             </div>
           </div>
 
-          <div className="chart glass2">
-            <div className="chartTitle outline">Ostatnie 7 dni</div>
-            <div className="bars">
-              {last7.days.map((d) => {
-                const h = clamp((d.exp / last7.max) * 100, 0, 100);
-                return (
-                  <div className="barCol" key={d.key}>
-                    <div className="bar" style={{ height: `${h}%` }} title={`${d.label}: ${d.exp} EXP`} />
-                    <div className="barLabel outline-soft">{d.label}</div>
-                  </div>
-                );
-              })}
+          <div style={{ height: 12 }} />
+
+          <div className="chart">
+            <div className="outline" style={{ fontSize: 18, marginBottom: 6 }}>
+              Ostatnie 7 dni
+            </div>
+            <div className="chartRow">
+              {last7.map((d) => (
+                <div
+                  key={d.day}
+                  className="bar"
+                  style={{
+                    height: `${Math.max(6, Math.round((d.value / maxBar) * 90))}px`,
+                  }}
+                  title={`${d.day}: ${d.value}`}
+                />
+              ))}
+            </div>
+            <div className="barLabel outline" style={{ display: "flex", gap: 8 }}>
+              {last7.map((d) => (
+                <div key={d.day} style={{ flex: 1, textAlign: "center" }}>
+                  {d.day}
+                </div>
+              ))}
+            </div>
+
+            <div style={{ height: 10 }} />
+
+            <div className="split2">
+              <div className="statBox">
+                <div className="statLabel outline">Top (EXP)</div>
+                <p className="outline" style={{ margin: 0, opacity: 0.95 }}>
+                  {topBy(entries, "exp") || "Brak danych"}
+                </p>
+              </div>
+              <div className="statBox">
+                <div className="statLabel outline">Top (ilość)</div>
+                <p className="outline" style={{ margin: 0, opacity: 0.95 }}>
+                  {topCount(entries) || "Brak danych"}
+                </p>
+              </div>
             </div>
           </div>
-        </section>
 
-        <section className="entries">
-          <div className="entriesHeader">
-            <div className="sectionTitle outline">Historia</div>
-            {armedEntryId && (
-              <button className="btn ghost outline" onClick={() => setArmedEntryId(null)}>
-                Anuluj usuwanie
-              </button>
-            )}
+          <div style={{ height: 12 }} />
+
+          {/* Historia */}
+          <div className="outline" style={{ fontSize: 18, marginBottom: 8 }}>
+            Historia
           </div>
 
           {entries.length === 0 ? (
-            <div className="empty outline">Brak wpisów. Dodaj pierwszy EXP 😄</div>
+            <div className="outline" style={{ opacity: 0.92 }}>
+              Brak wpisów. Dodaj pierwszy EXP i wbijaj levele 😄
+            </div>
           ) : (
-            <div className="entriesList">
-              {entries.map((e) => (
-                <EntryCard
+            <div style={{ display: "grid", gap: 10 }}>
+              {entries.slice(0, 25).map((e) => (
+                <EntryRow
                   key={e.id}
                   e={e}
                   armed={armedEntryId === e.id}
-                  onArm={(id) => setArmedEntryId(id)}
-                  onDelete={(id) => removeEntry(id)}
-                  longPressMs={3000}
+                  onArm={() => {
+                    setArmedEntryId(e.id);
+                    showToast("Przytrzymaj jeszcze raz 1s, aby usunąć 🗑️");
+                  }}
+                  onDelete={() => deleteEntry(e.id)}
+                  longPressMs={LONG_PRESS_MS}
                 />
               ))}
             </div>
           )}
-        </section>
+        </div>
 
-        {toast && <div className="toast outline">{toast}</div>}
+        {/* USTAWIENIA */}
+        <div className="card">
+          <h2 className="sectionLabel outline">Ustawienia</h2>
+          <div className="row">
+            <input
+              className="input"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Nazwa nagłówka"
+            />
+            <button className="btn outline" onClick={() => showToast("Zmieniono tytuł ✅")}>
+              Zapisz
+            </button>
+          </div>
+          <div className="smallNote outline" style={{ opacity: 0.9 }}>
+            Tip: czas przytrzymania do usuwania ustawisz w <b>LONG_PRESS_MS</b> na górze pliku.
+          </div>
+        </div>
+      </div>
+
+      {toast ? <div className="toast outline">{toast}</div> : null}
+    </div>
+  );
+}
+
+function QuickChip({ q, armed, onAdd, onArm, onDelete, longPressMs }) {
+  const press = useLongPress({
+    ms: longPressMs,
+    onClick: () => {
+      if (armed) {
+        // jeśli już uzbrojony, krótki klik nie kasuje — dodaje exp
+        onAdd();
+        return;
+      }
+      onAdd();
+    },
+    onLongPress: () => {
+      if (!armed) onArm();
+      else onDelete();
+    },
+  });
+
+  return (
+    <button className={"chip " + (armed ? "chipArmed" : "")} {...press}>
+      {/* OBWÓDKA TYLKO NA TEKŚCIE (a nie na całym chipie) */}
+      <span className="chipName outline">{q.name}</span>
+      <span className="chipExp outline">({q.exp})</span>
+      <span className="chipIcon" title="przytrzymaj, aby usunąć">
+        ⏳
+      </span>
+    </button>
+  );
+}
+
+function EntryRow({ e, armed, onArm, onDelete, longPressMs }) {
+  const press = useLongPress({
+    ms: longPressMs,
+    onClick: () => {
+      // nic
+    },
+    onLongPress: () => {
+      if (!armed) onArm();
+      else onDelete();
+    },
+  });
+
+  return (
+    <div className={"statBox " + (armed ? "chipArmed" : "")} {...press} style={{ cursor: "pointer" }}>
+      <div className="outline" style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+        <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {e.name}
+        </div>
+        <div>+{e.exp}</div>
+      </div>
+      <div className="outline" style={{ opacity: 0.8, marginTop: 6, fontSize: 12 }}>
+        {e.dayKey} • przytrzymaj 1s, aby usunąć
       </div>
     </div>
   );
+}
+
+function topBy(entries, key) {
+  if (!entries.length) return "";
+  const map = new Map();
+  for (const e of entries) {
+    const name = (e.name || "").trim();
+    if (!name) continue;
+    const val = Number(e[key]) || 0;
+    map.set(name, (map.get(name) || 0) + val);
+  }
+  let best = null;
+  for (const [name, sum] of map.entries()) {
+    if (!best || sum > best.sum) best = { name, sum };
+  }
+  return best ? `${best.name} • ${best.sum} EXP` : "";
+}
+
+function topCount(entries) {
+  if (!entries.length) return "";
+  const map = new Map();
+  for (const e of entries) {
+    const name = (e.name || "").trim();
+    if (!name) continue;
+    map.set(name, (map.get(name) || 0) + 1);
+  }
+  let best = null;
+  for (const [name, cnt] of map.entries()) {
+    if (!best || cnt > best.cnt) best = { name, cnt };
+  }
+  return best ? `${best.name} • ${best.cnt} razy` : "";
 }
