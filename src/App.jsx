@@ -1,16 +1,3 @@
-Pewnie — w Twojej apce to będzie działać dokładnie tak, jak opisałeś: **Total EXP zostaje**, tylko **level i progress liczymy “po progach”**, a nie `totalXP / 100`.
-
-Poniżej masz **gotowy kod do wklejenia** (cały plik), już z systemem:
-
-* koszt levela: `need(lvl) = Math.round(120 + 8 * lvl * lvl)`
-* liczenie levela: odejmujemy koszty level po levelu aż zabraknie EXP
-* progress paska: `xpIntoLevel / need(currentLevel)`
-* “Do następnego”: `need(currentLevel) - xpIntoLevel`
-* raport TXT też ma poprawione “do następnego levela”
-
-Wklejasz 1:1 i działa.
-
-```jsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /**
@@ -18,7 +5,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
  */
 const LONG_PRESS_MS = 1000;
 
-// RPG curve (koszt wbicia KOLEJNEGO levela)
+// RPG curve: koszt wbicia KOLEJNEGO levela (dla aktualnego lvl)
 function expNeedForLevel(lvl) {
   // lvl >= 1
   return Math.round(120 + 8 * lvl * lvl);
@@ -66,22 +53,13 @@ function uid() {
 }
 
 /**
- * Liczy level tak jak w grach:
+ * ====== Level calc (RPG)
  * totalXP -> odejmuj koszt lvl1, lvl2, ... aż zabraknie.
- *
- * Zwraca:
- * - level: aktualny level (min 1)
- * - need: ile EXP potrzeba na ten level (do wbicia następnego)
- * - into: ile EXP masz "w środku" tego levela
- * - toNext: ile brakuje do następnego levela
- * - pct: progress paska 0..100
  */
 function computeLevelProgress(totalXP) {
   let xp = Math.max(0, Number(totalXP) || 0);
   let lvl = 1;
 
-  // zabezpieczenie przed ewentualną pętlą w przypadku ekstremalnych wartości
-  // (normalnie i tak totalXP będzie małe)
   for (let guard = 0; guard < 10000; guard++) {
     const need = expNeedForLevel(lvl);
     if (xp >= need) {
@@ -89,13 +67,11 @@ function computeLevelProgress(totalXP) {
       lvl += 1;
       continue;
     }
-    // jesteśmy w lvl
     const toNext = need - xp;
     const pct = clamp((xp / need) * 100, 0, 100);
     return { level: lvl, need, into: xp, toNext, pct };
   }
 
-  // fallback (nie powinno zajść)
   const need = expNeedForLevel(lvl);
   return { level: lvl, need, into: 0, toNext: need, pct: 0 };
 }
@@ -328,11 +304,11 @@ function InnerApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.lastSeenDay, state.rankRP]);
 
-  // ====== NOWE LICZENIE LEVELA (RPG) ======
+  // ====== Level info (RPG) ======
   const levelInfo = useMemo(() => computeLevelProgress(state.totalXP), [state.totalXP]);
   const level = levelInfo.level;
-  const levelProgressXP = levelInfo.into; // XP w aktualnym levelu
-  const needThisLevel = levelInfo.need; // koszt wbicia następnego
+  const levelProgressXP = levelInfo.into;
+  const needThisLevel = levelInfo.need;
   const toNext = levelInfo.toNext;
   const progressPct = levelInfo.pct;
 
@@ -458,10 +434,7 @@ function InnerApp() {
       const exists = qas.some((qa) => (qa?.name || "").toLowerCase() === key);
       if (exists) return s;
 
-      return {
-        ...s,
-        quickActions: [...qas, { id: "qa_" + uid(), name: cleanName, exp: nExp, icon: "⏳" }]
-      };
+      return { ...s, quickActions: [...qas, { id: "qa_" + uid(), name: cleanName, exp: nExp, icon: "⏳" }] };
     });
   }
 
@@ -551,13 +524,15 @@ function InnerApp() {
                     {rankNext ? ` • do ${rankNext.name}: ${rpToNextRank}` : ""}
                   </div>
                 </div>
-                <div style={{ textAlign: "right" }}>
-                  <div className="stroke big">
-                    {levelProgressXP}/{needThisLevel} EXP
-                  </div>
-                  <div className="small">Do następnego: {toNext} EXP</div>
-                </div>
               </div>
+            </div>
+
+            {/* NAPIS EXP NAD PASKIEM (tu jest zmiana) */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 10 }}>
+              <div className="stroke big">
+                {levelProgressXP}/{needThisLevel} EXP
+              </div>
+              <div className="small">Do następnego: {toNext} EXP</div>
             </div>
 
             <div className="expBarWrap">
@@ -831,6 +806,3 @@ function TopList({ items, mode }) {
     </div>
   );
 }
-```
-
-Jeśli chcesz wersję **hybrydową** (np. do lvl 10 szybciej, potem ostrzej), to w tej samej strukturze zmieniamy tylko `expNeedForLevel(lvl)` i wszystko inne zostaje bez zmian.
