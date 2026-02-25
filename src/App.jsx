@@ -5,22 +5,19 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
  */
 const LONG_PRESS_MS = 1000; // <- usuwanie po 1 sekundzie
 
-const LEVEL_STEP = 100; // 100 EXP na level (prosto i czytelnie)
+const LEVEL_STEP = 100; // 100 EXP na level
 const DEFAULT_QUICK_ACTIONS = [
   { id: "qa_post", name: "Post", exp: 30, icon: "⏳" },
   { id: "qa_sing", name: "Śpiew", exp: 50, icon: "⏳" }
 ];
 
-// Diminishing returns – ile razy w danym dniu ta sama aktywność, tym mniejszy EXP
 function diminishingMultiplier(countAfterThis) {
-  // countAfterThis = ile razy będzie wykonana po dodaniu (1,2,3...)
   if (countAfterThis <= 2) return 1.0;
   if (countAfterThis <= 5) return 0.7;
   if (countAfterThis <= 10) return 0.4;
   return 0.2;
 }
 
-// Rangi liczone z Rank Points (RP) – oddzielnie od Total EXP (level)
 const RANKS = [
   { key: "bronze", name: "Bronze", minRP: 0 },
   { key: "silver", name: "Silver", minRP: 250 },
@@ -30,17 +27,12 @@ const RANKS = [
   { key: "master", name: "Master Tenor", minRP: 3200 }
 ];
 
-// Spadek RP za brak aktywności – sensowny: mały “drift” w dół, ale nie kasuje wszystkiego
-const DAILY_RP_DECAY = 0.06; // 6% RP dziennie bez aktywności (za każdy “brakujący” dzień)
-const MIN_RP_FLOOR = 0; // nie spada poniżej 0
+const DAILY_RP_DECAY = 0.06; // 6% dziennie bez aktywności
+const MIN_RP_FLOOR = 0;
 
-/**
- * ====== STORAGE ======
- */
 const LS_KEY = "ptt_state_v1";
 
 function todayKey(d = new Date()) {
-  // lokalny dzień: YYYY-MM-DD
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
@@ -56,7 +48,28 @@ function uid() {
 }
 
 /**
- * ====== ErrorBoundary (żeby nie było “czarnego ekranu”) ======
+ * ====== NORMALIZACJA / MIGRACJA STANU ======
+ * Chroni przed starymi danymi w localStorage (brak quickActions, entries itd.)
+ */
+function normalizeState(raw) {
+  const obj = raw && typeof raw === "object" ? raw : {};
+
+  const totalXP = Number(obj.totalXP);
+  const rankRP = Number(obj.rankRP);
+
+  return {
+    totalXP: Number.isFinite(totalXP) ? totalXP : 0,
+    rankRP: Number.isFinite(rankRP) ? rankRP : 0,
+    entries: Array.isArray(obj.entries) ? obj.entries : [],
+    quickActions: Array.isArray(obj.quickActions) && obj.quickActions.length > 0 ? obj.quickActions : DEFAULT_QUICK_ACTIONS,
+    dailyCounts: obj.dailyCounts && typeof obj.dailyCounts === "object" ? obj.dailyCounts : {},
+    lastSeenDay: typeof obj.lastSeenDay === "string" ? obj.lastSeenDay : todayKey(),
+    createdAt: Number.isFinite(Number(obj.createdAt)) ? obj.createdAt : Date.now()
+  };
+}
+
+/**
+ * ====== ErrorBoundary ======
  */
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -67,7 +80,6 @@ class ErrorBoundary extends React.Component {
     return { hasError: true, message: err?.message || "Nieznany błąd" };
   }
   componentDidCatch(err) {
-    // eslint-disable-next-line no-console
     console.error("App crashed:", err);
   }
   render() {
@@ -77,9 +89,7 @@ class ErrorBoundary extends React.Component {
           <div className="shell">
             <div className="card">
               <div className="stroke title">Ups… coś się wysypało 😵</div>
-              <p className="notice">
-                Zamiast czarnego ekranu masz ekran ratunkowy. Kliknij reset, a aplikacja wróci.
-              </p>
+              <p className="notice">Kliknij reset, żeby wrócić do działania (czyści dane lokalne).</p>
               <div className="errorBox">
                 <div className="small">Błąd:</div>
                 <div style={{ fontWeight: 900 }}>{this.state.message}</div>
@@ -94,10 +104,7 @@ class ErrorBoundary extends React.Component {
                 >
                   RESET (wyczyść dane)
                 </button>
-                <button
-                  className="btn btnSecondary"
-                  onClick={() => location.reload()}
-                >
+                <button className="btn btnSecondary" onClick={() => location.reload()}>
                   Odśwież
                 </button>
               </div>
@@ -149,45 +156,111 @@ function useLongPress({ onLongPress, onClick, ms = 1000 }) {
 }
 
 /**
+ * ====== KOMPONENTY (HOOKI TUTAJ, NIE W .map()) ======
+ */
+function QuickActionChip({ qa, isRevealed, onClick, onRevealDelete, onDelete }) {
+  const lp = useLongPress({
+    ms: LONG_PRESS_MS,
+    onClick: () => onClick(qa),
+    onLongPress: () => onRevealDelete(qa.id)
+  });
+
+  return (
+    <div className="chip" {...lp}>
+      <div className="chipLabel stroke">
+        {qa.name} ({qa.exp})
+      </div>
+      <div className="chipMeta">
+        <span aria-hidden>{qa.icon || "⏳"}</span>
+      </div>
+
+      {isRevealed && (
+        <div
+          className="trashBubble"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => onDelete(qa.id)}
+          title="Usuń szybką akcję"
+        >
+          <span aria-hidden>🗑️</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EntryItem({ entry, isRevealed, onRevealDelete, onDelete, onTap }) {
+  const lp = useLongPress({
+    ms: LONG_PRESS_MS,
+    onClick: onTap,
+    onLongPress: () => onRevealDelete(entry.id)
+  });
+
+  return (
+    <div className="item" {...lp}>
+      <div className="itemLeft">
+        <div className="itemName stroke">{entry.name}</div>
+        <div className="itemSub">
+          {entry.dateKey} • baza {entry.baseExp} • mnożnik {Math.round(entry.mult * 100)}%
+        </div>
+      </div>
+      <div className="itemRight">
+        <div className="itemExp stroke">+{entry.gainedExp} EXP</div>
+        <div className="itemSub">{new Date(entry.ts).toLocaleTimeString()}</div>
+      </div>
+
+      {isRevealed && (
+        <div
+          className="trashBubble"
+          onPointerDown={(ev) => ev.stopPropagation()}
+          onClick={() => onDelete(entry.id)}
+          title="Usuń wpis"
+        >
+          <span aria-hidden>🗑️</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * ====== APP ======
  */
 function InnerApp() {
   const [activityName, setActivityName] = useState("");
   const [activityExp, setActivityExp] = useState("");
+  const [qaName, setQaName] = useState("");
+  const [qaExp, setQaExp] = useState("");
 
-  // UI: które kafelki mają odsłonięty kosz
   const [revealDelete, setRevealDelete] = useState({ type: null, id: null });
 
   const [state, setState] = useState(() => {
     try {
       const raw = localStorage.getItem(LS_KEY);
-      if (raw) return JSON.parse(raw);
-    } catch {}
-    return {
-      totalXP: 0,
-      rankRP: 0,
-      entries: [], // {id, name, baseExp, gainedExp, mult, dateKey, ts}
-      quickActions: DEFAULT_QUICK_ACTIONS,
-      dailyCounts: {}, // { [dateKey]: { [nameLower]: count } }
-      lastSeenDay: todayKey(),
-      createdAt: Date.now()
-    };
+      if (raw) return normalizeState(JSON.parse(raw));
+    } catch (e) {
+      console.warn("Nie udało się wczytać stanu z localStorage:", e);
+    }
+    return normalizeState(null);
   });
 
-  // zapisywanie
+  // zapis do localStorage (zawsze znormalizowany)
   useEffect(() => {
-    localStorage.setItem(LS_KEY, JSON.stringify(state));
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify(normalizeState(state)));
+    } catch (e) {
+      console.warn("Nie udało się zapisać stanu do localStorage:", e);
+    }
   }, [state]);
 
-  // wykrycie zmiany dnia + decay
+  // dzień + decay RP
   useEffect(() => {
     const tick = () => {
       const nowDay = todayKey();
       if (state.lastSeenDay !== nowDay) {
         const daysMissed = diffDaysLocal(state.lastSeenDay, nowDay);
         if (daysMissed > 0) {
-          // jeśli minęły dni, a nie było aktywności – degraduj RP za każdy brakujący dzień
-          setState((s) => {
+          setState((prev) => {
+            const s = normalizeState(prev);
             let rp = s.rankRP;
             for (let i = 0; i < daysMissed; i++) {
               rp = Math.max(MIN_RP_FLOOR, Math.floor(rp * (1 - DAILY_RP_DECAY)));
@@ -195,17 +268,16 @@ function InnerApp() {
             return { ...s, rankRP: rp, lastSeenDay: nowDay };
           });
         } else {
-          setState((s) => ({ ...s, lastSeenDay: nowDay }));
+          setState((prev) => ({ ...normalizeState(prev), lastSeenDay: nowDay }));
         }
       }
     };
     tick();
-    const id = setInterval(tick, 20_000);
+    const id = setInterval(tick, 20000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.lastSeenDay, state.rankRP]);
 
-  // wyliczenia
   const level = useMemo(() => Math.floor(state.totalXP / LEVEL_STEP) + 1, [state.totalXP]);
   const levelBase = useMemo(() => (level - 1) * LEVEL_STEP, [level]);
   const levelProgressXP = useMemo(() => state.totalXP - levelBase, [state.totalXP, levelBase]);
@@ -221,108 +293,96 @@ function InnerApp() {
   }, [rankNext, state.rankRP]);
 
   const today = todayKey();
-  const todayEntries = useMemo(() => state.entries.filter((e) => e.dateKey === today), [state.entries, today]);
-  const xpToday = useMemo(() => todayEntries.reduce((a, e) => a + e.gainedExp, 0), [todayEntries]);
+  const todayEntries = useMemo(() => (Array.isArray(state.entries) ? state.entries : []).filter((e) => e.dateKey === today), [state.entries, today]);
+  const xpToday = useMemo(() => todayEntries.reduce((a, e) => a + (Number(e.gainedExp) || 0), 0), [todayEntries]);
 
-  const last7 = useMemo(() => buildLast7Days(state.entries), [state.entries]);
-  const topByXP = useMemo(() => computeTop(state.entries, "xp"), [state.entries]);
-  const topByCount = useMemo(() => computeTop(state.entries, "count"), [state.entries]);
+  const last7 = useMemo(() => buildLast7Days(Array.isArray(state.entries) ? state.entries : []), [state.entries]);
+  const topByXP = useMemo(() => computeTop(Array.isArray(state.entries) ? state.entries : [], "xp"), [state.entries]);
+  const topByCount = useMemo(() => computeTop(Array.isArray(state.entries) ? state.entries : [], "count"), [state.entries]);
 
   function addEntry({ name, baseExp }) {
     const cleanName = (name || "").trim();
     const nExp = Number(baseExp);
-
     if (!cleanName) return;
     if (!Number.isFinite(nExp) || nExp <= 0) return;
 
     const dKey = todayKey();
     const key = cleanName.toLowerCase();
 
-    // dzienny licznik
-    const prev = state.dailyCounts?.[dKey]?.[key] || 0;
-    const after = prev + 1;
-    const mult = diminishingMultiplier(after);
-    const gained = Math.max(1, Math.round(nExp * mult)); // minimum 1
+    setState((prev) => {
+      const s = normalizeState(prev);
 
-    // RP = “motywacja” – też uwzględnia diminishing returns
-    const gainedRP = Math.max(1, Math.round(gained * 0.6)); // RP rośnie wolniej niż EXP
+      const prevCount = s.dailyCounts?.[dKey]?.[key] || 0;
+      const after = prevCount + 1;
+      const mult = diminishingMultiplier(after);
+      const gained = Math.max(1, Math.round(nExp * mult));
+      const gainedRP = Math.max(1, Math.round(gained * 0.6));
 
-    const entry = {
-      id: uid(),
-      name: cleanName,
-      baseExp: nExp,
-      gainedExp: gained,
-      mult,
-      dateKey: dKey,
-      ts: Date.now()
-    };
-
-    setState((s) => ({
-      ...s,
-      totalXP: s.totalXP + gained,
-      rankRP: s.rankRP + gainedRP,
-      entries: [entry, ...s.entries],
-      dailyCounts: {
-        ...s.dailyCounts,
-        [dKey]: {
-          ...(s.dailyCounts?.[dKey] || {}),
-          [key]: after
-        }
-      }
-    }));
-
-    // Dodaj do szybkich akcji automatycznie (jeśli nie istnieje)
-    setState((s) => {
-      const exists = s.quickActions.some((qa) => qa.name.toLowerCase() === key);
-      if (exists) return s;
-      const newQA = {
-        id: "qa_" + uid(),
+      const entry = {
+        id: uid(),
         name: cleanName,
-        exp: nExp,
-        icon: "⏳"
+        baseExp: nExp,
+        gainedExp: gained,
+        mult,
+        dateKey: dKey,
+        ts: Date.now()
       };
-      return { ...s, quickActions: [...s.quickActions, newQA] };
+
+      const quickActionsArr = Array.isArray(s.quickActions) ? s.quickActions : [];
+      const existsQA = quickActionsArr.some((qa) => (qa?.name || "").toLowerCase() === key);
+      const quickActions = existsQA
+        ? quickActionsArr
+        : [...quickActionsArr, { id: "qa_" + uid(), name: cleanName, exp: nExp, icon: "⏳" }];
+
+      return {
+        ...s,
+        totalXP: s.totalXP + gained,
+        rankRP: s.rankRP + gainedRP,
+        entries: [entry, ...(Array.isArray(s.entries) ? s.entries : [])],
+        quickActions,
+        dailyCounts: {
+          ...s.dailyCounts,
+          [dKey]: {
+            ...(s.dailyCounts?.[dKey] || {}),
+            [key]: after
+          }
+        }
+      };
     });
-  }
 
-  function handleAddFromForm() {
-    addEntry({ name: activityName, baseExp: activityExp });
-    setActivityName("");
-    setActivityExp("");
-    setRevealDelete({ type: null, id: null });
-  }
-
-  function clickQuickAction(qa) {
-    addEntry({ name: qa.name, baseExp: qa.exp });
     setRevealDelete({ type: null, id: null });
   }
 
   function removeEntry(id) {
-    setState((s) => {
-      const entry = s.entries.find((e) => e.id === id);
+    setState((prev) => {
+      const s = normalizeState(prev);
+
+      const entriesArr = Array.isArray(s.entries) ? s.entries : [];
+      const entry = entriesArr.find((e) => e.id === id);
       if (!entry) return s;
 
-      const newEntries = s.entries.filter((e) => e.id !== id);
+      const newEntries = entriesArr.filter((e) => e.id !== id);
+      const gainedRP = Math.max(1, Math.round((Number(entry.gainedExp) || 0) * 0.6));
 
-      // cofamy XP i RP
-      const gainedRP = Math.max(1, Math.round(entry.gainedExp * 0.6));
-      const totalXP = Math.max(0, s.totalXP - entry.gainedExp);
+      const totalXP = Math.max(0, s.totalXP - (Number(entry.gainedExp) || 0));
       const rankRP = Math.max(0, s.rankRP - gainedRP);
 
-      // licznik dzienny – zdejmujemy 1 (żeby multiplikatory “logicznie” się cofały)
       const dKey = entry.dateKey;
-      const key = entry.name.toLowerCase();
+      const key = (entry.name || "").toLowerCase();
       const dayObj = { ...(s.dailyCounts?.[dKey] || {}) };
       if (dayObj[key]) dayObj[key] = Math.max(0, dayObj[key] - 1);
-      const dailyCounts = { ...s.dailyCounts, [dKey]: dayObj };
 
-      return { ...s, entries: newEntries, totalXP, rankRP, dailyCounts };
+      return { ...s, entries: newEntries, totalXP, rankRP, dailyCounts: { ...s.dailyCounts, [dKey]: dayObj } };
     });
     setRevealDelete({ type: null, id: null });
   }
 
   function removeQuickAction(id) {
-    setState((s) => ({ ...s, quickActions: s.quickActions.filter((q) => q.id !== id) }));
+    setState((prev) => {
+      const s = normalizeState(prev);
+      const qas = Array.isArray(s.quickActions) ? s.quickActions : [];
+      return { ...s, quickActions: qas.filter((q) => q.id !== id) };
+    });
     setRevealDelete({ type: null, id: null });
   }
 
@@ -332,28 +392,21 @@ function InnerApp() {
     if (!cleanName) return;
     if (!Number.isFinite(nExp) || nExp <= 0) return;
 
-    setState((s) => {
+    setState((prev) => {
+      const s = normalizeState(prev);
+
       const key = cleanName.toLowerCase();
-      const exists = s.quickActions.some((qa) => qa.name.toLowerCase() === key);
+      const qas = Array.isArray(s.quickActions) ? s.quickActions : [];
+      const exists = qas.some((qa) => (qa?.name || "").toLowerCase() === key);
       if (exists) return s;
-      return {
-        ...s,
-        quickActions: [...s.quickActions, { id: "qa_" + uid(), name: cleanName, exp: nExp, icon: "⏳" }]
-      };
+
+      return { ...s, quickActions: [...qas, { id: "qa_" + uid(), name: cleanName, exp: nExp, icon: "⏳" }] };
     });
   }
 
   function clearAll() {
     localStorage.removeItem(LS_KEY);
-    setState({
-      totalXP: 0,
-      rankRP: 0,
-      entries: [],
-      quickActions: DEFAULT_QUICK_ACTIONS,
-      dailyCounts: {},
-      lastSeenDay: todayKey(),
-      createdAt: Date.now()
-    });
+    setState(normalizeState(null));
     setRevealDelete({ type: null, id: null });
   }
 
@@ -377,14 +430,9 @@ function InnerApp() {
     last7.forEach((d) => lines.push(`- ${d.label}: ${d.value}`));
     lines.push("");
     lines.push("Top (EXP):");
-    topByXP.slice(0, 5).forEach((t, i) => lines.push(`${i + 1}. ${t.name} — ${t.xp} EXP (${t.count}x)`));
-    lines.push("");
-    lines.push("Top (Ilość):");
-    topByCount.slice(0, 5).forEach((t, i) => lines.push(`${i + 1}. ${t.name} — ${t.count}x (${t.xp} EXP)`));
-    lines.push("");
-    lines.push("Uwagi:");
-    lines.push("- EXP maleje przy spamowaniu tej samej aktywności w danym dniu (anty-farm).");
-    lines.push("- RP spada lekko za dni bez aktywności (system motywacyjny).");
+    computeTop(Array.isArray(state.entries) ? state.entries : [], "xp")
+      .slice(0, 5)
+      .forEach((t, i) => lines.push(`${i + 1}. ${t.name} — ${t.xp} EXP (${t.count}x)`));
 
     const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -397,24 +445,20 @@ function InnerApp() {
     URL.revokeObjectURL(url);
   }
 
-  // UI: formularz “dodaj quick action”
-  const [qaName, setQaName] = useState("");
-  const [qaExp, setQaExp] = useState("");
-
-  // klik w tło chowa kosze
   function hideDelete() {
     setRevealDelete({ type: null, id: null });
   }
 
   return (
-    <div className="container" onPointerDown={(e) => {
-      // jeśli klik w “puste” tło – schowaj kosz; jeśli klik w przycisk/element – nie przeszkadzaj
-      const tag = e.target?.tagName?.toLowerCase();
-      if (tag === "button" || tag === "input" || tag === "svg" || tag === "path") return;
-      // jeśli klik wewnątrz elementu z data-nokeep nie chowaj
-      if (e.target?.closest?.("[data-keep]")) return;
-      hideDelete();
-    }}>
+    <div
+      className="container"
+      onPointerDown={(e) => {
+        const tag = e.target?.tagName?.toLowerCase();
+        if (tag === "button" || tag === "input" || tag === "svg" || tag === "path") return;
+        if (e.target?.closest?.("[data-keep]")) return;
+        hideDelete();
+      }}
+    >
       <div className="shell">
         <div className="header">
           <div className="title stroke">Power Tenor Tracker</div>
@@ -422,22 +466,32 @@ function InnerApp() {
         </div>
 
         <div className="grid">
-          {/* LEWA */}
           <div className="card" data-keep>
             <div className="hudTop">
               <div className="badge">
-                <span className="star" aria-hidden>⭐</span>
-                <span className="stroke" style={{ fontWeight: 900, fontSize: 20 }}>LEVEL {level}</span>
+                <span className="star" aria-hidden>
+                  ⭐
+                </span>
+                <span className="stroke" style={{ fontWeight: 900, fontSize: 20 }}>
+                  LEVEL {level}
+                </span>
               </div>
 
               <div className="hudRight">
                 <div className="rankPill">
                   <div className="small">Ranga</div>
-                  <div className="stroke" style={{ fontWeight: 900, fontSize: 18 }}>{rank.name}</div>
-                  <div className="small">RP: {state.rankRP}{rankNext ? ` • do ${rankNext.name}: ${rpToNextRank}` : ""}</div>
+                  <div className="stroke" style={{ fontWeight: 900, fontSize: 18 }}>
+                    {rank.name}
+                  </div>
+                  <div className="small">
+                    RP: {state.rankRP}
+                    {rankNext ? ` • do ${rankNext.name}: ${rpToNextRank}` : ""}
+                  </div>
                 </div>
                 <div style={{ textAlign: "right" }}>
-                  <div className="stroke big">{levelProgressXP}/{LEVEL_STEP} EXP</div>
+                  <div className="stroke big">
+                    {levelProgressXP}/{LEVEL_STEP} EXP
+                  </div>
                   <div className="small">Do następnego: {toNext} EXP</div>
                 </div>
               </div>
@@ -471,50 +525,40 @@ function InnerApp() {
                 placeholder="EXP (np. 40)"
                 inputMode="numeric"
               />
-              <button className="btn stroke" onClick={handleAddFromForm}>+ DODAJ</button>
+              <button
+                className="btn stroke"
+                onClick={() => {
+                  addEntry({ name: activityName, baseExp: activityExp });
+                  setActivityName("");
+                  setActivityExp("");
+                }}
+              >
+                + DODAJ
+              </button>
             </div>
 
             <hr className="hr" />
 
             <div className="flexBetween">
-              <div className="sectionTitle stroke" style={{ margin: 0 }}>Szybkie akcje</div>
-              <button className="btn btnSecondary stroke" onClick={clearAll}>Wyczyść wszystko</button>
+              <div className="sectionTitle stroke" style={{ margin: 0 }}>
+                Szybkie akcje
+              </div>
+              <button className="btn btnSecondary stroke" onClick={clearAll}>
+                Wyczyść wszystko
+              </button>
             </div>
 
             <div className="chips" style={{ marginTop: 10 }}>
-              {state.quickActions.map((qa) => {
-                const isRevealed = revealDelete.type === "qa" && revealDelete.id === qa.id;
-
-                const lp = useLongPress({
-                  ms: LONG_PRESS_MS,
-                  onClick: () => clickQuickAction(qa),
-                  onLongPress: () => setRevealDelete({ type: "qa", id: qa.id })
-                });
-
-                return (
-                  <div
-                    key={qa.id}
-                    className="chip"
-                    {...lp}
-                  >
-                    <div className="chipLabel stroke">{qa.name} ({qa.exp})</div>
-                    <div className="chipMeta">
-                      <span aria-hidden>{qa.icon || "⏳"}</span>
-                    </div>
-
-                    {isRevealed && (
-                      <div
-                        className="trashBubble"
-                        onPointerDown={(e) => e.stopPropagation()}
-                        onClick={() => removeQuickAction(qa.id)}
-                        title="Usuń szybką akcję"
-                      >
-                        <span aria-hidden>🗑️</span>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+              {(Array.isArray(state.quickActions) ? state.quickActions : []).map((qa) => (
+                <QuickActionChip
+                  key={qa.id}
+                  qa={qa}
+                  isRevealed={revealDelete.type === "qa" && revealDelete.id === qa.id}
+                  onClick={(q) => addEntry({ name: q.name, baseExp: q.exp })}
+                  onRevealDelete={(id) => setRevealDelete({ type: "qa", id })}
+                  onDelete={removeQuickAction}
+                />
+              ))}
             </div>
 
             <div style={{ marginTop: 12 }} className="row">
@@ -548,56 +592,29 @@ function InnerApp() {
             <hr className="hr" />
 
             <div className="sectionTitle stroke">Historia</div>
-            {state.entries.length === 0 ? (
+            {(Array.isArray(state.entries) ? state.entries : []).length === 0 ? (
               <div className="notice stroke">Brak wpisów. Dodaj pierwszy EXP i wbijaj levele 😄</div>
             ) : (
               <div className="list">
-                {state.entries.map((e) => {
-                  const isRevealed = revealDelete.type === "entry" && revealDelete.id === e.id;
-
-                  const lp = useLongPress({
-                    ms: LONG_PRESS_MS,
-                    onClick: () => {
-                      // klik w wpis – nic nie robi (żeby nie było przypadkowych akcji)
-                      setRevealDelete({ type: null, id: null });
-                    },
-                    onLongPress: () => setRevealDelete({ type: "entry", id: e.id })
-                  });
-
-                  return (
-                    <div key={e.id} className="item" {...lp}>
-                      <div className="itemLeft">
-                        <div className="itemName stroke">{e.name}</div>
-                        <div className="itemSub">
-                          {e.dateKey} • baza {e.baseExp} • mnożnik {Math.round(e.mult * 100)}%
-                        </div>
-                      </div>
-                      <div className="itemRight">
-                        <div className="itemExp stroke">+{e.gainedExp} EXP</div>
-                        <div className="itemSub">{new Date(e.ts).toLocaleTimeString()}</div>
-                      </div>
-
-                      {isRevealed && (
-                        <div
-                          className="trashBubble"
-                          onPointerDown={(ev) => ev.stopPropagation()}
-                          onClick={() => removeEntry(e.id)}
-                          title="Usuń wpis"
-                        >
-                          <span aria-hidden>🗑️</span>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                {(Array.isArray(state.entries) ? state.entries : []).map((e) => (
+                  <EntryItem
+                    key={e.id}
+                    entry={e}
+                    isRevealed={revealDelete.type === "entry" && revealDelete.id === e.id}
+                    onRevealDelete={(id) => setRevealDelete({ type: "entry", id })}
+                    onDelete={removeEntry}
+                    onTap={() => setRevealDelete({ type: null, id: null })}
+                  />
+                ))}
               </div>
             )}
           </div>
 
-          {/* PRAWA */}
           <div className="card" data-keep>
             <div className="flexBetween">
-              <div className="sectionTitle stroke" style={{ margin: 0 }}>Raport</div>
+              <div className="sectionTitle stroke" style={{ margin: 0 }}>
+                Raport
+              </div>
               <button className="btn btnSecondary stroke" onClick={downloadReportTxt}>
                 🎮 STATY
               </button>
@@ -606,7 +623,7 @@ function InnerApp() {
             <div className="reportGrid" style={{ marginTop: 10 }}>
               <div className="statBox">
                 <div className="statLabel stroke">Wpisy</div>
-                <div className="statValue stroke">{state.entries.length}</div>
+                <div className="statValue stroke">{(Array.isArray(state.entries) ? state.entries : []).length}</div>
               </div>
               <div className="statBox">
                 <div className="statLabel stroke">EXP dziś</div>
@@ -623,26 +640,24 @@ function InnerApp() {
             </div>
 
             <div className="chart">
-              <div className="stroke" style={{ fontWeight: 900, marginBottom: 8 }}>Ostatnie 7 dni</div>
+              <div className="stroke" style={{ fontWeight: 900, marginBottom: 8 }}>
+                Ostatnie 7 dni
+              </div>
               <MiniLineChart data={last7} />
             </div>
 
             <div className="topGrid">
               <div className="statBox">
-                <div className="stroke" style={{ fontWeight: 900, marginBottom: 8 }}>Top (EXP)</div>
-                {topByXP.length === 0 ? (
-                  <div className="notice stroke">Brak danych</div>
-                ) : (
-                  <TopList items={topByXP.slice(0, 6)} mode="xp" />
-                )}
+                <div className="stroke" style={{ fontWeight: 900, marginBottom: 8 }}>
+                  Top (EXP)
+                </div>
+                {topByXP.length === 0 ? <div className="notice stroke">Brak danych</div> : <TopList items={topByXP.slice(0, 6)} mode="xp" />}
               </div>
               <div className="statBox">
-                <div className="stroke" style={{ fontWeight: 900, marginBottom: 8 }}>Top (ilość)</div>
-                {topByCount.length === 0 ? (
-                  <div className="notice stroke">Brak danych</div>
-                ) : (
-                  <TopList items={topByCount.slice(0, 6)} mode="count" />
-                )}
+                <div className="stroke" style={{ fontWeight: 900, marginBottom: 8 }}>
+                  Top (ilość)
+                </div>
+                {topByCount.length === 0 ? <div className="notice stroke">Brak danych</div> : <TopList items={topByCount.slice(0, 6)} mode="count" />}
               </div>
             </div>
 
@@ -666,13 +681,11 @@ export default function App() {
 }
 
 /**
- * ====== POMOCNICZE FUNKCJE ======
+ * ====== POMOCNICZE ======
  */
 function getRankFromRP(rp) {
   let current = RANKS[0];
-  for (const r of RANKS) {
-    if (rp >= r.minRP) current = r;
-  }
+  for (const r of RANKS) if (rp >= r.minRP) current = r;
   return current;
 }
 function getNextRank(currentRank) {
@@ -680,38 +693,31 @@ function getNextRank(currentRank) {
   if (idx < 0) return null;
   return RANKS[idx + 1] || null;
 }
-
 function diffDaysLocal(fromDay, toDay) {
-  // fromDay/toDay: YYYY-MM-DD
   const [fy, fm, fd] = fromDay.split("-").map(Number);
   const [ty, tm, td] = toDay.split("-").map(Number);
   const from = new Date(fy, fm - 1, fd);
   const to = new Date(ty, tm - 1, td);
-  const ms = to.getTime() - from.getTime();
-  return Math.floor(ms / (24 * 60 * 60 * 1000));
+  return Math.floor((to.getTime() - from.getTime()) / (24 * 60 * 60 * 1000));
 }
-
 function buildLast7Days(entries) {
   const out = [];
   const now = new Date();
   for (let i = 6; i >= 0; i--) {
     const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
     const key = todayKey(d);
-    const label = key.slice(5); // MM-DD
-    const value = entries
-      .filter((e) => e.dateKey === key)
-      .reduce((a, e) => a + e.gainedExp, 0);
+    const label = key.slice(5);
+    const value = entries.filter((e) => e.dateKey === key).reduce((a, e) => a + (Number(e.gainedExp) || 0), 0);
     out.push({ key, label, value });
   }
   return out;
 }
-
 function computeTop(entries, mode) {
   const map = new Map();
   for (const e of entries) {
     const k = e.name;
     const cur = map.get(k) || { name: k, xp: 0, count: 0 };
-    cur.xp += e.gainedExp;
+    cur.xp += Number(e.gainedExp) || 0;
     cur.count += 1;
     map.set(k, cur);
   }
@@ -722,33 +728,26 @@ function computeTop(entries, mode) {
 }
 
 /**
- * ====== MiniLineChart (SVG, bez bibliotek) ======
+ * ====== MiniLineChart (SVG) ======
  */
 function MiniLineChart({ data }) {
   const w = 520;
   const h = 140;
   const pad = 18;
-
   const maxV = Math.max(1, ...data.map((d) => d.value));
   const pts = data.map((d, i) => {
     const x = pad + (i * (w - pad * 2)) / (data.length - 1);
     const y = pad + (1 - d.value / maxV) * (h - pad * 2);
     return { x, y, v: d.value, label: d.label };
   });
-
   const dPath = pts.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" ");
 
   return (
     <svg viewBox={`0 0 ${w} ${h}`} width="100%" height="auto" aria-label="Wykres 7 dni">
-      {/* grid */}
       <path d={`M ${pad} ${h - pad} H ${w - pad}`} stroke="rgba(255,255,255,.18)" strokeWidth="2" fill="none" />
       <path d={`M ${pad} ${pad} V ${h - pad}`} stroke="rgba(255,255,255,.10)" strokeWidth="2" fill="none" />
-
-      {/* line */}
       <path d={dPath} stroke="rgba(255,255,255,.92)" strokeWidth="4" fill="none" strokeLinecap="round" strokeLinejoin="round" />
       <path d={dPath} stroke="rgba(255,43,214,.55)" strokeWidth="10" fill="none" strokeLinecap="round" strokeLinejoin="round" opacity=".35" />
-
-      {/* points */}
       {pts.map((p, idx) => (
         <g key={idx}>
           <circle cx={p.x} cy={p.y} r="6" fill="rgba(25,211,255,.9)" />
@@ -758,7 +757,6 @@ function MiniLineChart({ data }) {
           </text>
         </g>
       ))}
-
       <text x={pad} y={14} fontSize="12" fill="rgba(255,255,255,.70)" style={{ fontWeight: 900 }}>
         max: {maxV}
       </text>
@@ -774,7 +772,7 @@ function TopList({ items, mode }) {
           <div className="stroke" style={{ fontWeight: 900 }}>
             {i + 1}. {t.name}
           </div>
-          <div className="stroke" style={{ fontWeight: 900, opacity: .95 }}>
+          <div className="stroke" style={{ fontWeight: 900, opacity: 0.95 }}>
             {mode === "count" ? `${t.count}x` : `${t.xp} EXP`}
           </div>
         </div>
