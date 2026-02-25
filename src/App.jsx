@@ -1,538 +1,784 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-const LS_ENTRIES = "ptt_entries_v3";
-const LS_QUICK = "ptt_quick_v3";
-const LS_RANK_XP = "ptt_rankxp_v3";
-const LS_LAST_CHECK = "ptt_lastcheck_v3";
+/**
+ * ====== USTAWIENIA / BALANS ======
+ */
+const LONG_PRESS_MS = 1000; // <- usuwanie po 1 sekundzie
 
-const LONG_PRESS_MS = 1000; // <- TU zmieniasz czas przytrzymania (np. 1000 = 1s)
+const LEVEL_STEP = 100; // 100 EXP na level (prosto i czytelnie)
+const DEFAULT_QUICK_ACTIONS = [
+  { id: "qa_post", name: "Post", exp: 30, icon: "⏳" },
+  { id: "qa_sing", name: "Śpiew", exp: 50, icon: "⏳" }
+];
 
-function uid() {
-  return Math.random().toString(16).slice(2) + Date.now().toString(16);
+// Diminishing returns – ile razy w danym dniu ta sama aktywność, tym mniejszy EXP
+function diminishingMultiplier(countAfterThis) {
+  // countAfterThis = ile razy będzie wykonana po dodaniu (1,2,3...)
+  if (countAfterThis <= 2) return 1.0;
+  if (countAfterThis <= 5) return 0.7;
+  if (countAfterThis <= 10) return 0.4;
+  return 0.2;
 }
 
-function safeParse(json, fallback) {
-  try {
-    const v = JSON.parse(json);
-    return v ?? fallback;
-  } catch {
-    return fallback;
+// Rangi liczone z Rank Points (RP) – oddzielnie od Total EXP (level)
+const RANKS = [
+  { key: "bronze", name: "Bronze", minRP: 0 },
+  { key: "silver", name: "Silver", minRP: 250 },
+  { key: "gold", name: "Gold", minRP: 650 },
+  { key: "platinum", name: "Platinum", minRP: 1200 },
+  { key: "diamond", name: "Diamond", minRP: 2000 },
+  { key: "master", name: "Master Tenor", minRP: 3200 }
+];
+
+// Spadek RP za brak aktywności – sensowny: mały “drift” w dół, ale nie kasuje wszystkiego
+const DAILY_RP_DECAY = 0.06; // 6% RP dziennie bez aktywności (za każdy “brakujący” dzień)
+const MIN_RP_FLOOR = 0; // nie spada poniżej 0
+
+/**
+ * ====== STORAGE ======
+ */
+const LS_KEY = "ptt_state_v1";
+
+function todayKey(d = new Date()) {
+  // lokalny dzień: YYYY-MM-DD
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function clamp(n, a, b) {
+  return Math.max(a, Math.min(b, n));
+}
+
+function uid() {
+  return Math.random().toString(16).slice(2) + "_" + Date.now().toString(16);
+}
+
+/**
+ * ====== ErrorBoundary (żeby nie było “czarnego ekranu”) ======
+ */
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, message: "" };
+  }
+  static getDerivedStateFromError(err) {
+    return { hasError: true, message: err?.message || "Nieznany błąd" };
+  }
+  componentDidCatch(err) {
+    // eslint-disable-next-line no-console
+    console.error("App crashed:", err);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="container">
+          <div className="shell">
+            <div className="card">
+              <div className="stroke title">Ups… coś się wysypało 😵</div>
+              <p className="notice">
+                Zamiast czarnego ekranu masz ekran ratunkowy. Kliknij reset, a aplikacja wróci.
+              </p>
+              <div className="errorBox">
+                <div className="small">Błąd:</div>
+                <div style={{ fontWeight: 900 }}>{this.state.message}</div>
+              </div>
+              <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button
+                  className="btn"
+                  onClick={() => {
+                    localStorage.removeItem(LS_KEY);
+                    location.reload();
+                  }}
+                >
+                  RESET (wyczyść dane)
+                </button>
+                <button
+                  className="btn btnSecondary"
+                  onClick={() => location.reload()}
+                >
+                  Odśwież
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
   }
 }
 
-function todayKey(d = new Date()) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const da = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${da}`;
+/**
+ * ====== Long press hook ======
+ */
+function useLongPress({ onLongPress, onClick, ms = 1000 }) {
+  const timerRef = useRef(null);
+  const longPressedRef = useRef(false);
+
+  function start(e) {
+    longPressedRef.current = false;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      longPressedRef.current = true;
+      onLongPress?.(e);
+    }, ms);
+  }
+
+  function clear(e) {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = null;
+    if (!longPressedRef.current) {
+      onClick?.(e);
+    }
+  }
+
+  return {
+    onPointerDown: start,
+    onPointerUp: clear,
+    onPointerCancel: () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = null;
+    },
+    onPointerLeave: () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  };
 }
 
-function lastNDays(n = 7) {
+/**
+ * ====== APP ======
+ */
+function InnerApp() {
+  const [activityName, setActivityName] = useState("");
+  const [activityExp, setActivityExp] = useState("");
+
+  // UI: które kafelki mają odsłonięty kosz
+  const [revealDelete, setRevealDelete] = useState({ type: null, id: null });
+
+  const [state, setState] = useState(() => {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch {}
+    return {
+      totalXP: 0,
+      rankRP: 0,
+      entries: [], // {id, name, baseExp, gainedExp, mult, dateKey, ts}
+      quickActions: DEFAULT_QUICK_ACTIONS,
+      dailyCounts: {}, // { [dateKey]: { [nameLower]: count } }
+      lastSeenDay: todayKey(),
+      createdAt: Date.now()
+    };
+  });
+
+  // zapisywanie
+  useEffect(() => {
+    localStorage.setItem(LS_KEY, JSON.stringify(state));
+  }, [state]);
+
+  // wykrycie zmiany dnia + decay
+  useEffect(() => {
+    const tick = () => {
+      const nowDay = todayKey();
+      if (state.lastSeenDay !== nowDay) {
+        const daysMissed = diffDaysLocal(state.lastSeenDay, nowDay);
+        if (daysMissed > 0) {
+          // jeśli minęły dni, a nie było aktywności – degraduj RP za każdy brakujący dzień
+          setState((s) => {
+            let rp = s.rankRP;
+            for (let i = 0; i < daysMissed; i++) {
+              rp = Math.max(MIN_RP_FLOOR, Math.floor(rp * (1 - DAILY_RP_DECAY)));
+            }
+            return { ...s, rankRP: rp, lastSeenDay: nowDay };
+          });
+        } else {
+          setState((s) => ({ ...s, lastSeenDay: nowDay }));
+        }
+      }
+    };
+    tick();
+    const id = setInterval(tick, 20_000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.lastSeenDay, state.rankRP]);
+
+  // wyliczenia
+  const level = useMemo(() => Math.floor(state.totalXP / LEVEL_STEP) + 1, [state.totalXP]);
+  const levelBase = useMemo(() => (level - 1) * LEVEL_STEP, [level]);
+  const levelProgressXP = useMemo(() => state.totalXP - levelBase, [state.totalXP, levelBase]);
+  const nextLevelAt = useMemo(() => level * LEVEL_STEP, [level]);
+  const toNext = useMemo(() => nextLevelAt - state.totalXP, [nextLevelAt, state.totalXP]);
+  const progressPct = useMemo(() => clamp((levelProgressXP / LEVEL_STEP) * 100, 0, 100), [levelProgressXP]);
+
+  const rank = useMemo(() => getRankFromRP(state.rankRP), [state.rankRP]);
+  const rankNext = useMemo(() => getNextRank(rank), [rank]);
+  const rpToNextRank = useMemo(() => {
+    if (!rankNext) return 0;
+    return Math.max(0, rankNext.minRP - state.rankRP);
+  }, [rankNext, state.rankRP]);
+
+  const today = todayKey();
+  const todayEntries = useMemo(() => state.entries.filter((e) => e.dateKey === today), [state.entries, today]);
+  const xpToday = useMemo(() => todayEntries.reduce((a, e) => a + e.gainedExp, 0), [todayEntries]);
+
+  const last7 = useMemo(() => buildLast7Days(state.entries), [state.entries]);
+  const topByXP = useMemo(() => computeTop(state.entries, "xp"), [state.entries]);
+  const topByCount = useMemo(() => computeTop(state.entries, "count"), [state.entries]);
+
+  function addEntry({ name, baseExp }) {
+    const cleanName = (name || "").trim();
+    const nExp = Number(baseExp);
+
+    if (!cleanName) return;
+    if (!Number.isFinite(nExp) || nExp <= 0) return;
+
+    const dKey = todayKey();
+    const key = cleanName.toLowerCase();
+
+    // dzienny licznik
+    const prev = state.dailyCounts?.[dKey]?.[key] || 0;
+    const after = prev + 1;
+    const mult = diminishingMultiplier(after);
+    const gained = Math.max(1, Math.round(nExp * mult)); // minimum 1
+
+    // RP = “motywacja” – też uwzględnia diminishing returns
+    const gainedRP = Math.max(1, Math.round(gained * 0.6)); // RP rośnie wolniej niż EXP
+
+    const entry = {
+      id: uid(),
+      name: cleanName,
+      baseExp: nExp,
+      gainedExp: gained,
+      mult,
+      dateKey: dKey,
+      ts: Date.now()
+    };
+
+    setState((s) => ({
+      ...s,
+      totalXP: s.totalXP + gained,
+      rankRP: s.rankRP + gainedRP,
+      entries: [entry, ...s.entries],
+      dailyCounts: {
+        ...s.dailyCounts,
+        [dKey]: {
+          ...(s.dailyCounts?.[dKey] || {}),
+          [key]: after
+        }
+      }
+    }));
+
+    // Dodaj do szybkich akcji automatycznie (jeśli nie istnieje)
+    setState((s) => {
+      const exists = s.quickActions.some((qa) => qa.name.toLowerCase() === key);
+      if (exists) return s;
+      const newQA = {
+        id: "qa_" + uid(),
+        name: cleanName,
+        exp: nExp,
+        icon: "⏳"
+      };
+      return { ...s, quickActions: [...s.quickActions, newQA] };
+    });
+  }
+
+  function handleAddFromForm() {
+    addEntry({ name: activityName, baseExp: activityExp });
+    setActivityName("");
+    setActivityExp("");
+    setRevealDelete({ type: null, id: null });
+  }
+
+  function clickQuickAction(qa) {
+    addEntry({ name: qa.name, baseExp: qa.exp });
+    setRevealDelete({ type: null, id: null });
+  }
+
+  function removeEntry(id) {
+    setState((s) => {
+      const entry = s.entries.find((e) => e.id === id);
+      if (!entry) return s;
+
+      const newEntries = s.entries.filter((e) => e.id !== id);
+
+      // cofamy XP i RP
+      const gainedRP = Math.max(1, Math.round(entry.gainedExp * 0.6));
+      const totalXP = Math.max(0, s.totalXP - entry.gainedExp);
+      const rankRP = Math.max(0, s.rankRP - gainedRP);
+
+      // licznik dzienny – zdejmujemy 1 (żeby multiplikatory “logicznie” się cofały)
+      const dKey = entry.dateKey;
+      const key = entry.name.toLowerCase();
+      const dayObj = { ...(s.dailyCounts?.[dKey] || {}) };
+      if (dayObj[key]) dayObj[key] = Math.max(0, dayObj[key] - 1);
+      const dailyCounts = { ...s.dailyCounts, [dKey]: dayObj };
+
+      return { ...s, entries: newEntries, totalXP, rankRP, dailyCounts };
+    });
+    setRevealDelete({ type: null, id: null });
+  }
+
+  function removeQuickAction(id) {
+    setState((s) => ({ ...s, quickActions: s.quickActions.filter((q) => q.id !== id) }));
+    setRevealDelete({ type: null, id: null });
+  }
+
+  function addQuickActionManually(name, exp) {
+    const cleanName = (name || "").trim();
+    const nExp = Number(exp);
+    if (!cleanName) return;
+    if (!Number.isFinite(nExp) || nExp <= 0) return;
+
+    setState((s) => {
+      const key = cleanName.toLowerCase();
+      const exists = s.quickActions.some((qa) => qa.name.toLowerCase() === key);
+      if (exists) return s;
+      return {
+        ...s,
+        quickActions: [...s.quickActions, { id: "qa_" + uid(), name: cleanName, exp: nExp, icon: "⏳" }]
+      };
+    });
+  }
+
+  function clearAll() {
+    localStorage.removeItem(LS_KEY);
+    setState({
+      totalXP: 0,
+      rankRP: 0,
+      entries: [],
+      quickActions: DEFAULT_QUICK_ACTIONS,
+      dailyCounts: {},
+      lastSeenDay: todayKey(),
+      createdAt: Date.now()
+    });
+    setRevealDelete({ type: null, id: null });
+  }
+
+  function downloadReportTxt() {
+    const lines = [];
+    lines.push("POWER TENOR TRACKER — RAPORT");
+    lines.push(`Data: ${new Date().toLocaleString()}`);
+    lines.push("");
+    lines.push(`Total EXP: ${state.totalXP}`);
+    lines.push(`Level: ${level}`);
+    lines.push(`Do następnego levela: ${toNext} EXP`);
+    lines.push("");
+    lines.push(`Ranga: ${rank.name}`);
+    lines.push(`Rank Points (RP): ${state.rankRP}`);
+    if (rankNext) lines.push(`Do ${rankNext.name}: ${rpToNextRank} RP`);
+    lines.push("");
+    lines.push(`Wpisy dziś: ${todayEntries.length}`);
+    lines.push(`EXP dziś: ${xpToday}`);
+    lines.push("");
+    lines.push("Ostatnie 7 dni (EXP):");
+    last7.forEach((d) => lines.push(`- ${d.label}: ${d.value}`));
+    lines.push("");
+    lines.push("Top (EXP):");
+    topByXP.slice(0, 5).forEach((t, i) => lines.push(`${i + 1}. ${t.name} — ${t.xp} EXP (${t.count}x)`));
+    lines.push("");
+    lines.push("Top (Ilość):");
+    topByCount.slice(0, 5).forEach((t, i) => lines.push(`${i + 1}. ${t.name} — ${t.count}x (${t.xp} EXP)`));
+    lines.push("");
+    lines.push("Uwagi:");
+    lines.push("- EXP maleje przy spamowaniu tej samej aktywności w danym dniu (anty-farm).");
+    lines.push("- RP spada lekko za dni bez aktywności (system motywacyjny).");
+
+    const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `power-tenor-raport_${todayKey()}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  // UI: formularz “dodaj quick action”
+  const [qaName, setQaName] = useState("");
+  const [qaExp, setQaExp] = useState("");
+
+  // klik w tło chowa kosze
+  function hideDelete() {
+    setRevealDelete({ type: null, id: null });
+  }
+
+  return (
+    <div className="container" onPointerDown={(e) => {
+      // jeśli klik w “puste” tło – schowaj kosz; jeśli klik w przycisk/element – nie przeszkadzaj
+      const tag = e.target?.tagName?.toLowerCase();
+      if (tag === "button" || tag === "input" || tag === "svg" || tag === "path") return;
+      // jeśli klik wewnątrz elementu z data-nokeep nie chowaj
+      if (e.target?.closest?.("[data-keep]")) return;
+      hideDelete();
+    }}>
+      <div className="shell">
+        <div className="header">
+          <div className="title stroke">Power Tenor Tracker</div>
+          <p className="subtitle stroke">Wygląd jak gra RPG • EXP • levele • rangi</p>
+        </div>
+
+        <div className="grid">
+          {/* LEWA */}
+          <div className="card" data-keep>
+            <div className="hudTop">
+              <div className="badge">
+                <span className="star" aria-hidden>⭐</span>
+                <span className="stroke" style={{ fontWeight: 900, fontSize: 20 }}>LEVEL {level}</span>
+              </div>
+
+              <div className="hudRight">
+                <div className="rankPill">
+                  <div className="small">Ranga</div>
+                  <div className="stroke" style={{ fontWeight: 900, fontSize: 18 }}>{rank.name}</div>
+                  <div className="small">RP: {state.rankRP}{rankNext ? ` • do ${rankNext.name}: ${rpToNextRank}` : ""}</div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div className="stroke big">{levelProgressXP}/{LEVEL_STEP} EXP</div>
+                  <div className="small">Do następnego: {toNext} EXP</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="expBarWrap">
+              <div className="expBar" aria-label="Pasek doświadczenia">
+                <div className="expFill" style={{ width: `${progressPct}%` }} />
+                <div className="expShine" />
+              </div>
+            </div>
+
+            <div className="totalLine stroke">Total EXP: {state.totalXP}</div>
+
+            <hr className="hr" />
+
+            <div className="sectionTitle stroke">Dodaj EXP</div>
+
+            <div className="formGrid">
+              <input
+                className="input"
+                value={activityName}
+                onChange={(e) => setActivityName(e.target.value)}
+                placeholder="Nazwa aktywności (np. Ćwiczenie śpiewu)"
+                inputMode="text"
+              />
+              <input
+                className="input"
+                value={activityExp}
+                onChange={(e) => setActivityExp(e.target.value)}
+                placeholder="EXP (np. 40)"
+                inputMode="numeric"
+              />
+              <button className="btn stroke" onClick={handleAddFromForm}>+ DODAJ</button>
+            </div>
+
+            <hr className="hr" />
+
+            <div className="flexBetween">
+              <div className="sectionTitle stroke" style={{ margin: 0 }}>Szybkie akcje</div>
+              <button className="btn btnSecondary stroke" onClick={clearAll}>Wyczyść wszystko</button>
+            </div>
+
+            <div className="chips" style={{ marginTop: 10 }}>
+              {state.quickActions.map((qa) => {
+                const isRevealed = revealDelete.type === "qa" && revealDelete.id === qa.id;
+
+                const lp = useLongPress({
+                  ms: LONG_PRESS_MS,
+                  onClick: () => clickQuickAction(qa),
+                  onLongPress: () => setRevealDelete({ type: "qa", id: qa.id })
+                });
+
+                return (
+                  <div
+                    key={qa.id}
+                    className="chip"
+                    {...lp}
+                  >
+                    <div className="chipLabel stroke">{qa.name} ({qa.exp})</div>
+                    <div className="chipMeta">
+                      <span aria-hidden>{qa.icon || "⏳"}</span>
+                    </div>
+
+                    {isRevealed && (
+                      <div
+                        className="trashBubble"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={() => removeQuickAction(qa.id)}
+                        title="Usuń szybką akcję"
+                      >
+                        <span aria-hidden>🗑️</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={{ marginTop: 12 }} className="row">
+              <input
+                className="input"
+                style={{ flex: 1, minWidth: 180 }}
+                value={qaName}
+                onChange={(e) => setQaName(e.target.value)}
+                placeholder="Dodaj nową szybką akcję (nazwa)"
+              />
+              <input
+                className="input"
+                style={{ width: 160 }}
+                value={qaExp}
+                onChange={(e) => setQaExp(e.target.value)}
+                placeholder="EXP"
+                inputMode="numeric"
+              />
+              <button
+                className="btn stroke"
+                onClick={() => {
+                  addQuickActionManually(qaName, qaExp);
+                  setQaName("");
+                  setQaExp("");
+                }}
+              >
+                + DODAJ
+              </button>
+            </div>
+
+            <hr className="hr" />
+
+            <div className="sectionTitle stroke">Historia</div>
+            {state.entries.length === 0 ? (
+              <div className="notice stroke">Brak wpisów. Dodaj pierwszy EXP i wbijaj levele 😄</div>
+            ) : (
+              <div className="list">
+                {state.entries.map((e) => {
+                  const isRevealed = revealDelete.type === "entry" && revealDelete.id === e.id;
+
+                  const lp = useLongPress({
+                    ms: LONG_PRESS_MS,
+                    onClick: () => {
+                      // klik w wpis – nic nie robi (żeby nie było przypadkowych akcji)
+                      setRevealDelete({ type: null, id: null });
+                    },
+                    onLongPress: () => setRevealDelete({ type: "entry", id: e.id })
+                  });
+
+                  return (
+                    <div key={e.id} className="item" {...lp}>
+                      <div className="itemLeft">
+                        <div className="itemName stroke">{e.name}</div>
+                        <div className="itemSub">
+                          {e.dateKey} • baza {e.baseExp} • mnożnik {Math.round(e.mult * 100)}%
+                        </div>
+                      </div>
+                      <div className="itemRight">
+                        <div className="itemExp stroke">+{e.gainedExp} EXP</div>
+                        <div className="itemSub">{new Date(e.ts).toLocaleTimeString()}</div>
+                      </div>
+
+                      {isRevealed && (
+                        <div
+                          className="trashBubble"
+                          onPointerDown={(ev) => ev.stopPropagation()}
+                          onClick={() => removeEntry(e.id)}
+                          title="Usuń wpis"
+                        >
+                          <span aria-hidden>🗑️</span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* PRAWA */}
+          <div className="card" data-keep>
+            <div className="flexBetween">
+              <div className="sectionTitle stroke" style={{ margin: 0 }}>Raport</div>
+              <button className="btn btnSecondary stroke" onClick={downloadReportTxt}>
+                🎮 STATY
+              </button>
+            </div>
+
+            <div className="reportGrid" style={{ marginTop: 10 }}>
+              <div className="statBox">
+                <div className="statLabel stroke">Wpisy</div>
+                <div className="statValue stroke">{state.entries.length}</div>
+              </div>
+              <div className="statBox">
+                <div className="statLabel stroke">EXP dziś</div>
+                <div className="statValue stroke">{xpToday}</div>
+              </div>
+              <div className="statBox">
+                <div className="statLabel stroke">Level</div>
+                <div className="statValue stroke">{level}</div>
+              </div>
+              <div className="statBox">
+                <div className="statLabel stroke">Do następnego</div>
+                <div className="statValue stroke">{toNext} EXP</div>
+              </div>
+            </div>
+
+            <div className="chart">
+              <div className="stroke" style={{ fontWeight: 900, marginBottom: 8 }}>Ostatnie 7 dni</div>
+              <MiniLineChart data={last7} />
+            </div>
+
+            <div className="topGrid">
+              <div className="statBox">
+                <div className="stroke" style={{ fontWeight: 900, marginBottom: 8 }}>Top (EXP)</div>
+                {topByXP.length === 0 ? (
+                  <div className="notice stroke">Brak danych</div>
+                ) : (
+                  <TopList items={topByXP.slice(0, 6)} mode="xp" />
+                )}
+              </div>
+              <div className="statBox">
+                <div className="stroke" style={{ fontWeight: 900, marginBottom: 8 }}>Top (ilość)</div>
+                {topByCount.length === 0 ? (
+                  <div className="notice stroke">Brak danych</div>
+                ) : (
+                  <TopList items={topByCount.slice(0, 6)} mode="count" />
+                )}
+              </div>
+            </div>
+
+            <div style={{ marginTop: 12 }} className="notice stroke">
+              Anty-farm: powtarzanie tej samej czynności w ciągu dnia daje mniej EXP. <br />
+              Motywacja: brak aktywności → RP spada lekko (ranga może spaść).
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <InnerApp />
+    </ErrorBoundary>
+  );
+}
+
+/**
+ * ====== POMOCNICZE FUNKCJE ======
+ */
+function getRankFromRP(rp) {
+  let current = RANKS[0];
+  for (const r of RANKS) {
+    if (rp >= r.minRP) current = r;
+  }
+  return current;
+}
+function getNextRank(currentRank) {
+  const idx = RANKS.findIndex((r) => r.key === currentRank.key);
+  if (idx < 0) return null;
+  return RANKS[idx + 1] || null;
+}
+
+function diffDaysLocal(fromDay, toDay) {
+  // fromDay/toDay: YYYY-MM-DD
+  const [fy, fm, fd] = fromDay.split("-").map(Number);
+  const [ty, tm, td] = toDay.split("-").map(Number);
+  const from = new Date(fy, fm - 1, fd);
+  const to = new Date(ty, tm - 1, td);
+  const ms = to.getTime() - from.getTime();
+  return Math.floor(ms / (24 * 60 * 60 * 1000));
+}
+
+function buildLast7Days(entries) {
   const out = [];
   const now = new Date();
-  for (let i = n - 1; i >= 0; i--) {
-    const d = new Date(now);
-    d.setDate(now.getDate() - i);
-    out.push(todayKey(d));
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    const key = todayKey(d);
+    const label = key.slice(5); // MM-DD
+    const value = entries
+      .filter((e) => e.dateKey === key)
+      .reduce((a, e) => a + e.gainedExp, 0);
+    out.push({ key, label, value });
   }
   return out;
 }
 
-function downloadTextFile(filename, text) {
-  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-function useLongPress({ onLongPress, onClick, ms = 1000 }) {
-  const timer = useRef(null);
-  const longPressed = useRef(false);
-
-  const start = () => {
-    longPressed.current = false;
-    timer.current = window.setTimeout(() => {
-      longPressed.current = true;
-      onLongPress?.();
-    }, ms);
-  };
-
-  const clear = () => {
-    if (timer.current) window.clearTimeout(timer.current);
-    timer.current = null;
-  };
-
-  const end = () => {
-    clear();
-    if (!longPressed.current) onClick?.();
-  };
-
-  return {
-    onPointerDown: start,
-    onPointerUp: end,
-    onPointerLeave: clear,
-    onPointerCancel: clear,
-  };
-}
-
-export default function App() {
-  const [title, setTitle] = useState("Power Tenor Tracker");
-  const [entries, setEntries] = useState([]);
-  const [quick, setQuick] = useState([
-    { id: "q1", name: "Post", exp: 30 },
-    { id: "q2", name: "Śpiew", exp: 50 },
-  ]);
-
-  const [name, setName] = useState("");
-  const [exp, setExp] = useState("");
-
-  const [toast, setToast] = useState("");
-  const toastTimer = useRef(null);
-
-  const [armedEntryId, setArmedEntryId] = useState(null);
-  const [armedQuickId, setArmedQuickId] = useState(null);
-
-  const [rankXP, setRankXP] = useState(0);
-
-  // ---- Load
-  useEffect(() => {
-    const savedEntries = safeParse(localStorage.getItem(LS_ENTRIES), []);
-    const savedQuick = safeParse(localStorage.getItem(LS_QUICK), null);
-    const savedRank = safeParse(localStorage.getItem(LS_RANK_XP), 0);
-    if (Array.isArray(savedEntries)) setEntries(savedEntries);
-    if (Array.isArray(savedQuick) && savedQuick.length) setQuick(savedQuick);
-    if (typeof savedRank === "number") setRankXP(savedRank);
-  }, []);
-
-  // ---- Save
-  useEffect(() => {
-    localStorage.setItem(LS_ENTRIES, JSON.stringify(entries));
-  }, [entries]);
-
-  useEffect(() => {
-    localStorage.setItem(LS_QUICK, JSON.stringify(quick));
-  }, [quick]);
-
-  useEffect(() => {
-    localStorage.setItem(LS_RANK_XP, JSON.stringify(rankXP));
-  }, [rankXP]);
-
-  function showToast(msg) {
-    setToast(msg);
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(""), 1800);
-  }
-
-  const totalXP = useMemo(() => entries.reduce((s, e) => s + (Number(e.exp) || 0), 0), [entries]);
-  const level = useMemo(() => Math.floor(totalXP / 100) + 1, [totalXP]);
-  const inLevel = useMemo(() => totalXP % 100, [totalXP]);
-  const toNext = useMemo(() => 100 - inLevel, [inLevel]);
-
-  const expToday = useMemo(() => {
-    const tk = todayKey();
-    return entries
-      .filter((e) => e.dayKey === tk)
-      .reduce((s, e) => s + (Number(e.exp) || 0), 0);
-  }, [entries]);
-
-  const last7 = useMemo(() => {
-    const days = lastNDays(7);
-    const map = new Map(days.map((d) => [d, 0]));
-    for (const e of entries) {
-      if (map.has(e.dayKey)) map.set(e.dayKey, map.get(e.dayKey) + (Number(e.exp) || 0));
-    }
-    return days.map((d) => ({ day: d.slice(5), value: map.get(d) || 0 }));
-  }, [entries]);
-
-  const maxBar = useMemo(() => Math.max(10, ...last7.map((x) => x.value)), [last7]);
-
-  function addEntry(actionName, actionExp, alsoAddToQuick = true) {
-    const n = String(actionName || "").trim();
-    const v = Number(actionExp);
-
-    if (!n) return showToast("Podaj nazwę aktywności ✍️");
-    if (!Number.isFinite(v) || v <= 0) return showToast("Podaj poprawne EXP ✅");
-
-    const now = new Date();
-    const entry = {
-      id: uid(),
-      name: n,
-      exp: v,
-      ts: now.toISOString(),
-      dayKey: todayKey(now),
-    };
-
-    setEntries((prev) => [entry, ...prev]);
-    setRankXP((prev) => prev + v);
-
-    // Dodaj też jako szybka akcja (pole obok "Post, Śpiew") – jeśli nie istnieje
-    if (alsoAddToQuick) {
-      setQuick((prev) => {
-        const exists = prev.some((q) => q.name.toLowerCase() === n.toLowerCase() && Number(q.exp) === v);
-        if (exists) return prev;
-        return [...prev, { id: uid(), name: n, exp: v }];
-      });
-    }
-
-    setName("");
-    setExp("");
-    showToast(`Dodano: ${n} (+${v})`);
-  }
-
-  function clearAll() {
-    setEntries([]);
-    setRankXP(0);
-    setArmedEntryId(null);
-    setArmedQuickId(null);
-
-    localStorage.removeItem(LS_ENTRIES);
-    localStorage.removeItem(LS_RANK_XP);
-    localStorage.removeItem(LS_LAST_CHECK);
-
-    showToast("Wyczyszczono wszystko ✅");
-  }
-
-  function deleteEntry(entryId) {
-    setEntries((prev) => prev.filter((e) => e.id !== entryId));
-    // rankXP celowo nie “cofamy” za historię, bo to byłby exploit.
-    // Jeśli chcesz: możemy odjąć exp usuniętego wpisu (powiedz).
-    showToast("Usunięto wpis 🗑️");
-  }
-
-  function deleteQuick(qid) {
-    setQuick((prev) => prev.filter((q) => q.id !== qid));
-    showToast("Usunięto szybką akcję 🗑️");
-  }
-
-  function downloadReport() {
-    const lines = [];
-    lines.push(`RAPORT: ${title}`);
-    lines.push(`Data: ${new Date().toLocaleString()}`);
-    lines.push("");
-    lines.push(`LEVEL: ${level}`);
-    lines.push(`EXP łącznie: ${totalXP}`);
-    lines.push(`EXP dziś: ${expToday}`);
-    lines.push(`Do następnego: ${toNext} EXP`);
-    lines.push(`Rank XP: ${rankXP}`);
-    lines.push("");
-    lines.push("Ostatnie 7 dni (EXP):");
-    for (const d of last7) lines.push(`- ${d.day}: ${d.value}`);
-    lines.push("");
-    lines.push("Ostatnie wpisy:");
-    entries.slice(0, 20).forEach((e) => {
-      lines.push(`- ${e.dayKey} | ${e.name} (+${e.exp})`);
-    });
-
-    downloadTextFile(`raport_${todayKey()}.txt`, lines.join("\n"));
-    showToast("Pobrano raport 📄");
-  }
-
-  // ---------- UI
-  const progressPct = Math.round((inLevel / 100) * 100);
-
-  return (
-    <div className="container">
-      <div className="header">
-        <h1 className="title outline">{title}</h1>
-        <p className="subtitle outline" style={{ opacity: 0.92 }}>
-          Wygląd jak gra RPG • EXP • levele
-        </p>
-      </div>
-
-      <div className="grid">
-        {/* STATUS */}
-        <div className="card">
-          <div className="cardTitleRow">
-            <div className="badge">
-              <span style={{ fontSize: 18 }}>⭐</span>
-              <span className="outline" style={{ fontSize: 18 }}>LEVEL {level}</span>
-            </div>
-            <div className="outline" style={{ fontSize: 20 }}>
-              {inLevel}/100 EXP
-            </div>
-          </div>
-
-          <div className="progressWrap" aria-label="progress">
-            <div className="progressFill" style={{ width: `${progressPct}%` }} />
-          </div>
-
-          <div className="smallNote">
-            <span className="outline" style={{ opacity: 0.9 }}>
-              Total EXP: {totalXP}
-            </span>
-          </div>
-        </div>
-
-        {/* DODAWANIE */}
-        <div className="card">
-          <h2 className="sectionLabel outline">Dodaj EXP</h2>
-          <div className="row">
-            <input
-              className="input"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Nazwa aktywności (np. Ćwiczenie śpiewu)"
-            />
-            <input
-              className="input"
-              value={exp}
-              onChange={(e) => setExp(e.target.value.replace(/[^\d]/g, ""))}
-              placeholder="EXP (np. 40)"
-              inputMode="numeric"
-            />
-            <button
-              className="btn btnPrimary outline"
-              onClick={() => addEntry(name, exp, true)}
-            >
-              + DODAJ
-            </button>
-          </div>
-
-          <div style={{ height: 10 }} />
-
-          <h3 className="sectionLabel outline" style={{ fontSize: 22, marginTop: 8 }}>
-            Szybkie akcje
-          </h3>
-
-          <div className="quickWrap">
-            {quick.map((q) => (
-              <QuickChip
-                key={q.id}
-                q={q}
-                armed={armedQuickId === q.id}
-                onAdd={() => addEntry(q.name, q.exp, false)}
-                onArm={() => {
-                  setArmedQuickId(q.id);
-                  showToast("Przytrzymaj jeszcze raz 1s, aby usunąć 🗑️");
-                }}
-                onDelete={() => deleteQuick(q.id)}
-                longPressMs={LONG_PRESS_MS}
-              />
-            ))}
-          </div>
-
-          <div style={{ height: 12 }} />
-
-          <button className="btn outline" onClick={clearAll}>
-            Wyczyść wszystko
-          </button>
-        </div>
-
-        {/* RAPORT */}
-        <div className="card">
-          <div className="cardTitleRow">
-            <h2 className="cardTitle outline">Raport</h2>
-            <button className="btn outline" onClick={downloadReport} title="Pobierz raport tekstowy">
-              🎮 STATY
-            </button>
-          </div>
-
-          <div className="split2">
-            <div className="statBox">
-              <div className="statLabel outline">Wpisy</div>
-              <p className="statValue outline">{entries.length}</p>
-            </div>
-            <div className="statBox">
-              <div className="statLabel outline">EXP dziś</div>
-              <p className="statValue outline">{expToday}</p>
-            </div>
-            <div className="statBox">
-              <div className="statLabel outline">Level</div>
-              <p className="statValue outline">{level}</p>
-            </div>
-            <div className="statBox">
-              <div className="statLabel outline">Do następnego</div>
-              <p className="statValue outline">{toNext} EXP</p>
-            </div>
-          </div>
-
-          <div style={{ height: 12 }} />
-
-          <div className="chart">
-            <div className="outline" style={{ fontSize: 18, marginBottom: 6 }}>
-              Ostatnie 7 dni
-            </div>
-            <div className="chartRow">
-              {last7.map((d) => (
-                <div
-                  key={d.day}
-                  className="bar"
-                  style={{
-                    height: `${Math.max(6, Math.round((d.value / maxBar) * 90))}px`,
-                  }}
-                  title={`${d.day}: ${d.value}`}
-                />
-              ))}
-            </div>
-            <div className="barLabel outline" style={{ display: "flex", gap: 8 }}>
-              {last7.map((d) => (
-                <div key={d.day} style={{ flex: 1, textAlign: "center" }}>
-                  {d.day}
-                </div>
-              ))}
-            </div>
-
-            <div style={{ height: 10 }} />
-
-            <div className="split2">
-              <div className="statBox">
-                <div className="statLabel outline">Top (EXP)</div>
-                <p className="outline" style={{ margin: 0, opacity: 0.95 }}>
-                  {topBy(entries, "exp") || "Brak danych"}
-                </p>
-              </div>
-              <div className="statBox">
-                <div className="statLabel outline">Top (ilość)</div>
-                <p className="outline" style={{ margin: 0, opacity: 0.95 }}>
-                  {topCount(entries) || "Brak danych"}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div style={{ height: 12 }} />
-
-          {/* Historia */}
-          <div className="outline" style={{ fontSize: 18, marginBottom: 8 }}>
-            Historia
-          </div>
-
-          {entries.length === 0 ? (
-            <div className="outline" style={{ opacity: 0.92 }}>
-              Brak wpisów. Dodaj pierwszy EXP i wbijaj levele 😄
-            </div>
-          ) : (
-            <div style={{ display: "grid", gap: 10 }}>
-              {entries.slice(0, 25).map((e) => (
-                <EntryRow
-                  key={e.id}
-                  e={e}
-                  armed={armedEntryId === e.id}
-                  onArm={() => {
-                    setArmedEntryId(e.id);
-                    showToast("Przytrzymaj jeszcze raz 1s, aby usunąć 🗑️");
-                  }}
-                  onDelete={() => deleteEntry(e.id)}
-                  longPressMs={LONG_PRESS_MS}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* USTAWIENIA */}
-        <div className="card">
-          <h2 className="sectionLabel outline">Ustawienia</h2>
-          <div className="row">
-            <input
-              className="input"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="Nazwa nagłówka"
-            />
-            <button className="btn outline" onClick={() => showToast("Zmieniono tytuł ✅")}>
-              Zapisz
-            </button>
-          </div>
-          <div className="smallNote outline" style={{ opacity: 0.9 }}>
-            Tip: czas przytrzymania do usuwania ustawisz w <b>LONG_PRESS_MS</b> na górze pliku.
-          </div>
-        </div>
-      </div>
-
-      {toast ? <div className="toast outline">{toast}</div> : null}
-    </div>
-  );
-}
-
-function QuickChip({ q, armed, onAdd, onArm, onDelete, longPressMs }) {
-  const press = useLongPress({
-    ms: longPressMs,
-    onClick: () => {
-      if (armed) {
-        // jeśli już uzbrojony, krótki klik nie kasuje — dodaje exp
-        onAdd();
-        return;
-      }
-      onAdd();
-    },
-    onLongPress: () => {
-      if (!armed) onArm();
-      else onDelete();
-    },
-  });
-
-  return (
-    <button className={"chip " + (armed ? "chipArmed" : "")} {...press}>
-      {/* OBWÓDKA TYLKO NA TEKŚCIE (a nie na całym chipie) */}
-      <span className="chipName outline">{q.name}</span>
-      <span className="chipExp outline">({q.exp})</span>
-      <span className="chipIcon" title="przytrzymaj, aby usunąć">
-        ⏳
-      </span>
-    </button>
-  );
-}
-
-function EntryRow({ e, armed, onArm, onDelete, longPressMs }) {
-  const press = useLongPress({
-    ms: longPressMs,
-    onClick: () => {
-      // nic
-    },
-    onLongPress: () => {
-      if (!armed) onArm();
-      else onDelete();
-    },
-  });
-
-  return (
-    <div className={"statBox " + (armed ? "chipArmed" : "")} {...press} style={{ cursor: "pointer" }}>
-      <div className="outline" style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-        <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {e.name}
-        </div>
-        <div>+{e.exp}</div>
-      </div>
-      <div className="outline" style={{ opacity: 0.8, marginTop: 6, fontSize: 12 }}>
-        {e.dayKey} • przytrzymaj 1s, aby usunąć
-      </div>
-    </div>
-  );
-}
-
-function topBy(entries, key) {
-  if (!entries.length) return "";
+function computeTop(entries, mode) {
   const map = new Map();
   for (const e of entries) {
-    const name = (e.name || "").trim();
-    if (!name) continue;
-    const val = Number(e[key]) || 0;
-    map.set(name, (map.get(name) || 0) + val);
+    const k = e.name;
+    const cur = map.get(k) || { name: k, xp: 0, count: 0 };
+    cur.xp += e.gainedExp;
+    cur.count += 1;
+    map.set(k, cur);
   }
-  let best = null;
-  for (const [name, sum] of map.entries()) {
-    if (!best || sum > best.sum) best = { name, sum };
-  }
-  return best ? `${best.name} • ${best.sum} EXP` : "";
+  const arr = Array.from(map.values());
+  if (mode === "count") arr.sort((a, b) => b.count - a.count || b.xp - a.xp);
+  else arr.sort((a, b) => b.xp - a.xp || b.count - a.count);
+  return arr;
 }
 
-function topCount(entries) {
-  if (!entries.length) return "";
-  const map = new Map();
-  for (const e of entries) {
-    const name = (e.name || "").trim();
-    if (!name) continue;
-    map.set(name, (map.get(name) || 0) + 1);
-  }
-  let best = null;
-  for (const [name, cnt] of map.entries()) {
-    if (!best || cnt > best.cnt) best = { name, cnt };
-  }
-  return best ? `${best.name} • ${best.cnt} razy` : "";
+/**
+ * ====== MiniLineChart (SVG, bez bibliotek) ======
+ */
+function MiniLineChart({ data }) {
+  const w = 520;
+  const h = 140;
+  const pad = 18;
+
+  const maxV = Math.max(1, ...data.map((d) => d.value));
+  const pts = data.map((d, i) => {
+    const x = pad + (i * (w - pad * 2)) / (data.length - 1);
+    const y = pad + (1 - d.value / maxV) * (h - pad * 2);
+    return { x, y, v: d.value, label: d.label };
+  });
+
+  const dPath = pts.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" ");
+
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} width="100%" height="auto" aria-label="Wykres 7 dni">
+      {/* grid */}
+      <path d={`M ${pad} ${h - pad} H ${w - pad}`} stroke="rgba(255,255,255,.18)" strokeWidth="2" fill="none" />
+      <path d={`M ${pad} ${pad} V ${h - pad}`} stroke="rgba(255,255,255,.10)" strokeWidth="2" fill="none" />
+
+      {/* line */}
+      <path d={dPath} stroke="rgba(255,255,255,.92)" strokeWidth="4" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      <path d={dPath} stroke="rgba(255,43,214,.55)" strokeWidth="10" fill="none" strokeLinecap="round" strokeLinejoin="round" opacity=".35" />
+
+      {/* points */}
+      {pts.map((p, idx) => (
+        <g key={idx}>
+          <circle cx={p.x} cy={p.y} r="6" fill="rgba(25,211,255,.9)" />
+          <circle cx={p.x} cy={p.y} r="10" fill="rgba(25,211,255,.25)" />
+          <text x={p.x} y={h - 6} textAnchor="middle" fontSize="12" fill="rgba(255,255,255,.85)" style={{ fontWeight: 900 }}>
+            {p.label}
+          </text>
+        </g>
+      ))}
+
+      <text x={pad} y={14} fontSize="12" fill="rgba(255,255,255,.70)" style={{ fontWeight: 900 }}>
+        max: {maxV}
+      </text>
+    </svg>
+  );
+}
+
+function TopList({ items, mode }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {items.map((t, i) => (
+        <div key={t.name} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+          <div className="stroke" style={{ fontWeight: 900 }}>
+            {i + 1}. {t.name}
+          </div>
+          <div className="stroke" style={{ fontWeight: 900, opacity: .95 }}>
+            {mode === "count" ? `${t.count}x` : `${t.xp} EXP`}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
