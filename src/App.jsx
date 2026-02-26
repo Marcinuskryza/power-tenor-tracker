@@ -496,7 +496,7 @@ function InnerApp() {
     >
       <div className="shell">
         <div className="header">
-          <div className="title stroke">PŻyćko RPG</div>
+          <div className="title stroke">Żyćko RPG</div>
           <p className="subtitle stroke">RPG • EXP • levele • rangi</p>
         </div>
 
