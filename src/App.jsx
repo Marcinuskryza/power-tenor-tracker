@@ -29,7 +29,7 @@ const RANKS = [
   { key: "gold", name: "Gold", minRP: 650 },
   { key: "platinum", name: "Platinum", minRP: 1200 },
   { key: "diamond", name: "Diamond", minRP: 2000 },
-  { key: "master", name: "Master Tenor", minRP: 3200 }
+  { key: "master", name: "Master Vocal", minRP: 3200 }
 ];
 
 const DAILY_RP_DECAY = 0.06; // 6% dziennie bez aktywności
@@ -446,7 +446,7 @@ function InnerApp() {
 
   function downloadReportTxt() {
     const lines = [];
-    lines.push("POWER TENOR TRACKER — RAPORT");
+    lines.push("Żyćko RPG — RAPORT");
     lines.push(`Data: ${new Date().toLocaleString()}`);
     lines.push("");
     lines.push(`Total EXP: ${state.totalXP}`);
@@ -473,7 +473,7 @@ function InnerApp() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `power-tenor-raport_${todayKey()}.txt`;
+    a.download = `żyćko-rpg-raport_${todayKey()}.txt`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -496,8 +496,8 @@ function InnerApp() {
     >
       <div className="shell">
         <div className="header">
-          <div className="title stroke">Power Tenor Tracker</div>
-          <p className="subtitle stroke">Wygląd jak gra RPG • EXP • levele • rangi</p>
+          <div className="title stroke">PŻyćko RPG</div>
+          <p className="subtitle stroke">RPG • EXP • levele • rangi</p>
         </div>
 
         <div className="grid">
