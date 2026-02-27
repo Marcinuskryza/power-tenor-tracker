@@ -2,13 +2,16 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /**
  * ==========================================================
- * Żyćko RPG v2 — ONE FILE APP.jsx
- * - Karta 1: Dziennik EXP (jak u Ciebie)
- * - Karta 2: Quest Board (daily/weekly/monthly/6M)
- * - Kampania/Sezon 6M + raporty + archiwum
- * - Ocena jakości 1–3 TYLKO przy questach
- * - Eventy (np. Koncert) dodawane ręcznie jako bonus
- * - Tagowanie nowych czynności (quick actions) do ścieżek
+ * Żyćko RPG v2 — ONE FILE App.jsx (POPRAWKA)
+ *
+ * ZMIANA wg Twojej prośby:
+ * ✅ Tagowanie (kategoria/ścieżka) dzieje się TYLKO przy DODAWANIU SZYBKIEJ AKCJI
+ * ❌ Klikanie quick action NIE wyświetla już modala tagowania
+ * ❌ Dodanie zwykłego wpisu (manual) NIE wyświetla modala tagowania
+ *
+ * Dodatkowo:
+ * - Wyłączyłem automatyczne tworzenie quick action z manualnych wpisów,
+ *   żeby nic “nie dodawało się samo” i nie wymuszało tagowania.
  * ==========================================================
  */
 
@@ -17,16 +20,15 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
  */
 const LONG_PRESS_MS = 1000;
 
-// RPG curve: koszt wbicia KOLEJNEGO levela (dla aktualnego lvl)
 function expNeedForLevel(lvl) {
   return Math.round(120 + 8 * lvl * lvl);
 }
 
-const DAILY_RP_DECAY = 0.06; // 6% dziennie bez aktywności
+const DAILY_RP_DECAY = 0.06;
 const MIN_RP_FLOOR = 0;
 
 const LS_KEY_V2 = "ptt_state_v2";
-const LS_KEY_V1 = "ptt_state_v1"; // migracja
+const LS_KEY_V1 = "ptt_state_v1";
 
 function clamp(n, a, b) {
   return Math.max(a, Math.min(b, n));
@@ -49,12 +51,11 @@ function diffDaysLocal(fromDay, toDay) {
 }
 function startOfISOWeek(d = new Date()) {
   const date = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const day = date.getDay() || 7; // Mon=1..Sun=7
+  const day = date.getDay() || 7;
   if (day !== 1) date.setDate(date.getDate() - (day - 1));
   return date;
 }
 function isoWeekKey(d = new Date()) {
-  // yyyy-Www
   const date = startOfISOWeek(d);
   const year = date.getFullYear();
   const oneJan = new Date(year, 0, 1);
@@ -77,7 +78,6 @@ const RANKS = [
   { key: "master", name: "Master Vocal", minRP: 3200 }
 ];
 
-// anty-farm jak u Ciebie (dla wpisów w ciągu dnia)
 function diminishingMultiplier(countAfterThis) {
   if (countAfterThis <= 2) return 1.0;
   if (countAfterThis <= 5) return 0.7;
@@ -108,24 +108,17 @@ const TIME_COSTS = [
 
 /**
  * ====== JAKOŚĆ (questy) ======
- * - tylko przy questach, szybkie 1–3
- * - wpływa na EXP/RP/CP
  */
 function qualityMult(q) {
   const Q = Number(q) || 2;
-  // EXP: delikatnie
   const exp = Q === 1 ? 0.85 : Q === 3 ? 1.15 : 1.0;
-  // RP: mocniej
   const rp = Q === 1 ? 0.7 : Q === 3 ? 1.3 : 1.0;
-  // CP: najmocniej
   const cp = Q === 1 ? 0.5 : Q === 3 ? 1.4 : 1.0;
   return { exp, rp, cp };
 }
 
 /**
- * ====== BIBLIOTEKA QUESTÓW (templates) ======
- * Generator wybiera propozycje na podstawie deficytów i zmęczenia.
- * Każdy template ma: title, track, timeCost, type, difficulty, baseExp, baseRP, baseCP
+ * ====== BIBLIOTEKA QUESTÓW ======
  */
 const QUEST_TEMPLATES = [
   // VOCAL
@@ -145,15 +138,15 @@ const QUEST_TEMPLATES = [
   // BANDS
   { track: "bands", type: "Drill", difficulty: 1, timeCost: "M", title: "Próba domowa: przećwicz 3 numery (focus na trudne fragmenty)", baseExp: 65, baseRP: 50, baseCP: 18 },
   { track: "bands", type: "Build", difficulty: 2, timeCost: "M", title: "Nagraj demo wokalu do 1 fragmentu utworu zespołu", baseExp: 90, baseRP: 75, baseCP: 28 },
-  { track: "bands", type: "Ship", difficulty: 1, timeCost: "S", title: "Zrób 1 konkretny krok organizacyjny (2 wiadomości / ustalenie)", baseExp: 40, baseRP: 36, baseCP: 12 },
+  { track: "bands", type: "Ship", difficulty: 1, timeCost: "S", title: "Zrób 1 krok organizacyjny (2 wiadomości / ustalenie)", baseExp: 40, baseRP: 36, baseCP: 12 },
   { track: "bands", type: "Boss", difficulty: 3, timeCost: "L", title: "Przygotuj set: przejedź 6–10 numerów + zaznacz 5 poprawek", baseExp: 145, baseRP: 115, baseCP: 44 },
 
-  // DRAGON (Smocza Grota)
+  // DRAGON
   { track: "dragon", type: "Build", difficulty: 1, timeCost: "S", title: "Smocza Grota: dopisz 8 linijek tekstu", baseExp: 35, baseRP: 28, baseCP: 14 },
   { track: "dragon", type: "Build", difficulty: 2, timeCost: "M", title: "Smocza Grota: wymyśl 2 riff/tematy i nagraj szkic", baseExp: 85, baseRP: 70, baseCP: 30 },
   { track: "dragon", type: "Boss", difficulty: 3, timeCost: "L", title: "Smocza Grota: zrób mini-demo (zwrotka+refren szkic)", baseExp: 150, baseRP: 120, baseCP: 55 },
 
-  // FITNESS (specjalnie “łagodne”)
+  // FITNESS (łagodne)
   { track: "fitness", type: "Starter", difficulty: 1, timeCost: "S", title: "Fitness MVW: 5–10 min (rozgrzewka + 1 seria)", baseExp: 25, baseRP: 22, baseCP: 6 },
   { track: "fitness", type: "Drill", difficulty: 1, timeCost: "S", title: "Spacer / bieg: 10–15 min (bez spiny)", baseExp: 30, baseRP: 26, baseCP: 7 },
   { track: "fitness", type: "Build", difficulty: 2, timeCost: "M", title: "Trening: 25–40 min (siłownia/kalistenika/bieg)", baseExp: 70, baseRP: 60, baseCP: 14 }
@@ -161,7 +154,6 @@ const QUEST_TEMPLATES = [
 
 /**
  * ====== EVENTY (manualne bonusy) ======
- * np. koncert dodawany ręcznie, nie generuje się automatycznie.
  */
 const EVENT_TYPES = [
   { key: "concert", name: "Koncert", emoji: "🎸", baseExp: 250, baseRP: 180 },
@@ -170,16 +162,21 @@ const EVENT_TYPES = [
 ];
 
 /**
- * ====== SZYBKIE AKCJE (start) ======
+ * ====== SZYBKIE AKCJE ======
+ * + domyślne meta (tagowanie od razu, bez pytania)
  */
 const DEFAULT_QUICK_ACTIONS = [
   { id: "qa_kent", name: "Kentemplin", exp: 60, icon: "🎤" },
   { id: "qa_post", name: "Post/Short", exp: 45, icon: "📱" }
 ];
 
+const DEFAULT_ACTIVITY_META = {
+  kentemplin: { trackKey: "vocal", timeCost: "M" },
+  "post/short": { trackKey: "career", timeCost: "S" }
+};
+
 /**
- * ====== Level calc (RPG)
- * totalXP -> odejmuj koszt lvl1, lvl2, ... aż zabraknie.
+ * ====== Level calc ======
  */
 function computeLevelProgress(totalXP) {
   let xp = Math.max(0, Number(totalXP) || 0);
@@ -201,9 +198,6 @@ function computeLevelProgress(totalXP) {
   return { level: lvl, need, into: 0, toNext: need, pct: 0 };
 }
 
-/**
- * ====== RANGI ======
- */
 function getRankFromRP(rp) {
   let current = RANKS[0];
   for (const r of RANKS) if (rp >= r.minRP) current = r;
@@ -216,7 +210,7 @@ function getNextRank(currentRank) {
 }
 
 /**
- * ====== NORMALIZACJA / MIGRACJA STANU ======
+ * ====== Kampania ======
  */
 function defaultCampaignPack() {
   const startTs = Date.now();
@@ -238,18 +232,21 @@ function defaultCampaignPack() {
   };
 }
 
+/**
+ * ====== Normalizacja ======
+ */
 function normalizeState(raw) {
   const obj = raw && typeof raw === "object" ? raw : {};
 
   const totalXP = Number(obj.totalXP);
   const rankRP = Number(obj.rankRP);
 
-  // v2 additions
-  const activeTab = typeof obj.activeTab === "string" ? obj.activeTab : "log"; // "log" | "quests"
+  const activeTab = typeof obj.activeTab === "string" ? obj.activeTab : "log";
   const quests = Array.isArray(obj.quests) ? obj.quests : [];
   const questHistory = Array.isArray(obj.questHistory) ? obj.questHistory : [];
   const questGen = obj.questGen && typeof obj.questGen === "object" ? obj.questGen : { lastDayKey: "", lastWeekKey: "", lastMonthKey: "" };
-  const activityMeta = obj.activityMeta && typeof obj.activityMeta === "object" ? obj.activityMeta : {}; // { [activityKey]: { trackKey, timeCost } }
+
+  const activityMeta = obj.activityMeta && typeof obj.activityMeta === "object" ? obj.activityMeta : { ...DEFAULT_ACTIVITY_META };
   const events = Array.isArray(obj.events) ? obj.events : [];
   const campaign = obj.campaign && typeof obj.campaign === "object" ? obj.campaign : defaultCampaignPack();
   const archivedCampaigns = Array.isArray(obj.archivedCampaigns) ? obj.archivedCampaigns : [];
@@ -263,7 +260,6 @@ function normalizeState(raw) {
     lastSeenDay: typeof obj.lastSeenDay === "string" ? obj.lastSeenDay : todayKey(),
     createdAt: Number.isFinite(Number(obj.createdAt)) ? obj.createdAt : Date.now(),
 
-    // v2
     activeTab,
     quests,
     questHistory,
@@ -275,7 +271,6 @@ function normalizeState(raw) {
   };
 }
 
-// Migracja v1 -> v2
 function loadState() {
   try {
     const raw2 = localStorage.getItem(LS_KEY_V2);
@@ -482,11 +477,7 @@ function Modal({ open, title, children, onClose }) {
         zIndex: 9999
       }}
     >
-      <div
-        className="card"
-        onPointerDown={(e) => e.stopPropagation()}
-        style={{ width: "min(720px, 100%)", maxHeight: "85vh", overflow: "auto" }}
-      >
+      <div className="card" onPointerDown={(e) => e.stopPropagation()} style={{ width: "min(720px, 100%)", maxHeight: "85vh", overflow: "auto" }}>
         <div className="flexBetween" style={{ gap: 12 }}>
           <div className="sectionTitle stroke" style={{ margin: 0 }}>
             {title}
@@ -522,7 +513,13 @@ function QuestCard({ q, track, onDone, onReroll, onSnooze, disabled }) {
         </div>
         <div className="itemSub">
           {track.name} • trudność {q.difficulty}/3 •{" "}
-          {q.period === "daily" ? `dziś (${q.dueDayKey})` : q.period === "weekly" ? `tydzień ${q.dueWeekKey}` : q.period === "monthly" ? `miesiąc ${q.dueMonthKey}` : "kampania"}
+          {q.period === "daily"
+            ? `dziś (${q.dueDayKey})`
+            : q.period === "weekly"
+            ? `tydzień ${q.dueWeekKey}`
+            : q.period === "monthly"
+            ? `miesiąc ${q.dueMonthKey}`
+            : "kampania"}
           {q.status === "done" ? ` • ✅ zrobione (Q${q.quality || 2})` : ""}
           {q.status === "skipped" ? " • ⛔ pominięte" : ""}
           {q.snoozeUntil ? ` • 😴 uśpione do ${q.snoozeUntil}` : ""}
@@ -549,7 +546,7 @@ function QuestCard({ q, track, onDone, onReroll, onSnooze, disabled }) {
 }
 
 /**
- * ====== RAPORTY / EXPORT ======
+ * ====== EXPORT ======
  */
 function downloadText(filename, text) {
   const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
@@ -576,7 +573,7 @@ function downloadJson(filename, obj) {
 }
 
 /**
- * ====== QUEST GENERATOR (adaptacyjny, prosty i sprawiedliwy) ======
+ * ====== QUEST GENERATOR ======
  */
 function getRecentWindowDayKeys(days = 14) {
   const out = [];
@@ -593,7 +590,6 @@ function computeRecentActivity(entries, questHistory) {
 
   for (const e of entries) {
     if (!days.includes(e.dateKey)) continue;
-    // jeśli wpis ma trackKey (z meta), zalicz do track; jeśli nie, pomijamy w adaptacji
     if (e.trackKey && byTrack[e.trackKey]) byTrack[e.trackKey].entries += 1;
   }
   for (const q of questHistory) {
@@ -607,11 +603,8 @@ function computeRecentActivity(entries, questHistory) {
 function pickTemplateForTrack(trackKey, { avoidTypes = [], maxDifficulty = 3, preferTypes = [] } = {}) {
   const pool = QUEST_TEMPLATES.filter((t) => t.track === trackKey && t.difficulty <= maxDifficulty && !avoidTypes.includes(t.type));
   if (pool.length === 0) return null;
-
-  // preferTypes: jeśli da się, wybierz z preferowanych
   const preferred = pool.filter((t) => preferTypes.includes(t.type));
   const list = preferred.length > 0 ? preferred : pool;
-
   return list[Math.floor(Math.random() * list.length)];
 }
 function makeQuestFromTemplate(tpl, period, due) {
@@ -638,16 +631,13 @@ function makeQuestFromTemplate(tpl, period, due) {
   return q;
 }
 
-// Prosty, adaptacyjny rozdzielacz: priorytet + deficyt (co leży) + fitness “delikatnie”
 function generateDailyQuests(state) {
   const day = todayKey();
   const existing = state.quests.filter((q) => q.period === "daily" && q.dueDayKey === day);
-  if (existing.length >= 4) return []; // już jest
+  if (existing.length >= 4) return [];
 
   const recent = computeRecentActivity(state.entries, state.questHistory);
 
-  // bazowo 4 daily: vocal + career + (bands/dragon) + fitness starter
-  // dobór 3 “głównych” przez deficyt: (prio share - recent share)
   const trackKeys = TRACKS.map((t) => t.key);
   const totalRecent = trackKeys.reduce((a, k) => a + (recent[k]?.questsDone || 0) + (recent[k]?.entries || 0) * 0.2, 0);
 
@@ -659,46 +649,51 @@ function generateDailyQuests(state) {
       const cur = (recent[k]?.questsDone || 0) + (recent[k]?.entries || 0) * 0.2;
       const curShare = totalRecent > 0 ? cur / totalRecent : 0;
       const wantShare = desired[k] / sumPrio;
-      const deficit = wantShare - curShare; // dodatni = leży
-      // fitness zawsze ma “mniejsze ciśnienie”
+      const deficit = wantShare - curShare;
       const damp = k === "fitness" ? 0.35 : 1.0;
       return { k, val: deficit * damp };
     })
     .sort((a, b) => b.val - a.val);
 
-  // zawsze zapewnij wokal i karierę
   const pickedTracks = [];
   if (!pickedTracks.includes("vocal")) pickedTracks.push("vocal");
   if (!pickedTracks.includes("career")) pickedTracks.push("career");
 
-  // dobierz 1–2 kolejne z deficytu
   for (const s of score) {
     if (pickedTracks.length >= 3) break;
-    if (s.k === "fitness") continue; // fitness osobno
+    if (s.k === "fitness") continue;
     if (!pickedTracks.includes(s.k)) pickedTracks.push(s.k);
   }
-
-  // fitness starter zawsze, ale bardzo krótki
   pickedTracks.push("fitness");
 
   const out = [];
-  // preferencje: jeśli momentum wysokie w tracku, dawaj Build/Ship zamiast Drill
   for (const tk of pickedTracks) {
     const r = recent[tk] || { entries: 0, questsDone: 0 };
     const momentum = r.questsDone + r.entries * 0.2;
-    const preferTypes = tk === "vocal" ? (momentum >= 4 ? ["Build", "Boss"] : ["Drill", "Build"]) : tk === "career" ? (momentum >= 3 ? ["Ship", "Build"] : ["Build", "Ship"]) : tk === "bands" ? ["Drill", "Build", "Ship"] : tk === "dragon" ? ["Build"] : ["Starter", "Drill", "Build"];
+    const preferTypes =
+      tk === "vocal"
+        ? momentum >= 4
+          ? ["Build", "Boss"]
+          : ["Drill", "Build"]
+        : tk === "career"
+        ? momentum >= 3
+          ? ["Ship", "Build"]
+          : ["Build", "Ship"]
+        : tk === "bands"
+        ? ["Drill", "Build", "Ship"]
+        : tk === "dragon"
+        ? ["Build"]
+        : ["Starter", "Drill", "Build"];
+
     const maxDifficulty = tk === "fitness" ? 2 : 3;
 
     const tpl = pickTemplateForTrack(tk, { preferTypes, maxDifficulty, avoidTypes: [] });
     if (!tpl) continue;
-
-    // fitness: zawsze S/M, delikatnie
     if (tk === "fitness" && tpl.timeCost === "L") continue;
 
     out.push(makeQuestFromTemplate(tpl, "daily", day));
   }
 
-  // jeśli brakowało do 4, dociągnij z najwyższego deficytu (bez fitness)
   while (out.length < 4) {
     const tk = score.find((s) => s.k !== "fitness")?.k || "vocal";
     const tpl = pickTemplateForTrack(tk, { maxDifficulty: 2, preferTypes: ["Build", "Ship", "Drill"] });
@@ -706,7 +701,6 @@ function generateDailyQuests(state) {
     out.push(makeQuestFromTemplate(tpl, "daily", day));
   }
 
-  // usuń duplikaty tytułów
   const seen = new Set();
   return out.filter((q) => {
     const key = q.track + "::" + q.title;
@@ -722,7 +716,6 @@ function generateWeeklyQuests(state) {
   if (existing.length >= 4) return [];
 
   const out = [];
-  // 1 boss wokal lub career zależnie od deficytu; plus 2 build/ship, plus 1 bands
   const recent = computeRecentActivity(state.entries, state.questHistory);
 
   const vocalScore = (recent.vocal?.questsDone || 0) + (recent.vocal?.entries || 0) * 0.2;
@@ -741,7 +734,6 @@ function generateWeeklyQuests(state) {
   const bands = pickTemplateForTrack("bands", { preferTypes: ["Build", "Boss", "Drill", "Ship"], maxDifficulty: 3 });
   if (bands) out.push(makeQuestFromTemplate(bands, "weekly", wk));
 
-  // dragon: 1x na tydzień jeśli nie ma już weekly dragon i jeśli nie jest “uśpione” w historii
   const alreadyDragon = existing.some((q) => q.track === "dragon") || out.some((q) => q.track === "dragon");
   if (!alreadyDragon) {
     const dragon = pickTemplateForTrack("dragon", { preferTypes: ["Build"], maxDifficulty: 2 });
@@ -756,23 +748,18 @@ function generateMonthlyMilestones(state) {
   const existing = state.quests.filter((q) => q.period === "monthly" && q.dueMonthKey === mk);
   if (existing.length >= 3) return [];
 
-  // miesięczne “meta” (nie muszą mieć exp ogromnego, to milestone)
   const makeMilestone = (track, title) =>
-    makeQuestFromTemplate(
-      { track, type: "Milestone", difficulty: 2, timeCost: "L", title, baseExp: 120, baseRP: 95, baseCP: 80 },
-      "monthly",
-      mk
-    );
+    makeQuestFromTemplate({ track, type: "Milestone", difficulty: 2, timeCost: "L", title, baseExp: 120, baseRP: 95, baseCP: 80 }, "monthly", mk);
 
-  const out = [];
-  out.push(makeMilestone("vocal", "Milestone: 16 sesji wokalu + 4 nagrania kontrolne w tym miesiącu"));
-  out.push(makeMilestone("career", "Milestone: 12 publikacji/zgłoszeń łącznie (social+castingi) w tym miesiącu"));
-  out.push(makeMilestone("bands", "Milestone: 6 sesji pracy pod zespoły + 1 demo fragmentu w tym miesiącu"));
-  return out;
+  return [
+    makeMilestone("vocal", "Milestone: 16 sesji wokalu + 4 nagrania kontrolne w tym miesiącu"),
+    makeMilestone("career", "Milestone: 12 publikacji/zgłoszeń łącznie (social+castingi) w tym miesiącu"),
+    makeMilestone("bands", "Milestone: 6 sesji pracy pod zespoły + 1 demo fragmentu w tym miesiącu")
+  ];
 }
 
 /**
- * ====== MINI WYKRES (z Twojego kodu) ======
+ * ====== Mini wykres + topy ======
  */
 function buildLast7Days(entries) {
   const out = [];
@@ -863,12 +850,14 @@ function InnerApp() {
 
   const [state, setState] = useState(() => loadState());
 
-  // modale / overlaye
+  // Tagowanie: tylko po dodaniu quick action
   const [tagModal, setTagModal] = useState({ open: false, activityKey: "", activityName: "" });
   const [tagChoice, setTagChoice] = useState({ trackKey: "vocal", timeCost: "M" });
 
+  // Quest quality modal
   const [qualityModal, setQualityModal] = useState({ open: false, questId: null });
 
+  // Event modal
   const [eventModal, setEventModal] = useState({ open: false });
   const [eventType, setEventType] = useState("concert");
   const [eventLabel, setEventLabel] = useState("");
@@ -906,7 +895,7 @@ function InnerApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.lastSeenDay, state.rankRP]);
 
-  // ====== Level info (RPG) ======
+  // Level + rank
   const levelInfo = useMemo(() => computeLevelProgress(state.totalXP), [state.totalXP]);
   const level = levelInfo.level;
   const levelProgressXP = levelInfo.into;
@@ -930,7 +919,7 @@ function InnerApp() {
   const topByXP = useMemo(() => computeTop(entriesArr, "xp"), [entriesArr]);
   const topByCount = useMemo(() => computeTop(entriesArr, "count"), [entriesArr]);
 
-  // ====== Questy: generowanie (daily/weekly/monthly) ======
+  // ====== QUESTY: generowanie ======
   useEffect(() => {
     const day = todayKey();
     const wk = isoWeekKey(new Date());
@@ -939,7 +928,6 @@ function InnerApp() {
     setState((prev) => {
       const s = normalizeState(prev);
       const gen = s.questGen || { lastDayKey: "", lastWeekKey: "", lastMonthKey: "" };
-
       const newQuests = [];
 
       if (gen.lastDayKey !== day) {
@@ -956,29 +944,12 @@ function InnerApp() {
       }
 
       if (newQuests.length === 0) return s;
-
       return { ...s, quests: [...newQuests, ...s.quests], questGen: gen };
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.lastSeenDay]);
 
-  // ====== Helpers: meta aktywności ======
-  function getActivityMeta(name) {
-    const key = (name || "").trim().toLowerCase();
-    return state.activityMeta?.[key] || null;
-  }
-  function ensureActivityTagged(name) {
-    const cleanName = (name || "").trim();
-    if (!cleanName) return;
-
-    const key = cleanName.toLowerCase();
-    const meta = state.activityMeta?.[key];
-    if (meta && meta.trackKey && meta.timeCost) return;
-
-    // otwórz modal do tagowania
-    setTagChoice({ trackKey: "vocal", timeCost: "M" });
-    setTagModal({ open: true, activityKey: key, activityName: cleanName });
-  }
+  // ====== Tag modal apply (tylko dla quick actions) ======
   function applyActivityTag() {
     setState((prev) => {
       const s = normalizeState(prev);
@@ -993,7 +964,7 @@ function InnerApp() {
     setTagModal({ open: false, activityKey: "", activityName: "" });
   }
 
-  // ====== Dziennik: wpisy ======
+  // ====== Entries ======
   function addEntry({ name, baseExp, fromQuest = false, questId = null }) {
     const cleanName = (name || "").trim();
     const nExp = Number(baseExp);
@@ -1003,6 +974,7 @@ function InnerApp() {
     const dKey = todayKey();
     const key = cleanName.toLowerCase();
 
+    // TrackKey tylko jeśli istnieje meta (czyli: quick action była otagowana przy dodawaniu)
     const meta = state.activityMeta?.[key];
     const trackKey = meta?.trackKey || null;
 
@@ -1025,19 +997,14 @@ function InnerApp() {
         ts: Date.now(),
         fromQuest: !!fromQuest,
         questId: questId || null,
-        trackKey: trackKey || null
+        trackKey
       };
-
-      const quickActionsArr = Array.isArray(s.quickActions) ? s.quickActions : [];
-      const existsQA = quickActionsArr.some((qa) => (qa?.name || "").toLowerCase() === key);
-      const quickActions = existsQA ? quickActionsArr : [...quickActionsArr, { id: "qa_" + uid(), name: cleanName, exp: nExp, icon: "⏳" }];
 
       return {
         ...s,
         totalXP: s.totalXP + gained,
         rankRP: s.rankRP + gainedRP,
         entries: [entry, ...(Array.isArray(s.entries) ? s.entries : [])],
-        quickActions,
         dailyCounts: {
           ...s.dailyCounts,
           [dKey]: {
@@ -1047,9 +1014,6 @@ function InnerApp() {
         }
       };
     });
-
-    // jeśli aktywność nie ma taga — poproś o tag
-    ensureActivityTagged(cleanName);
 
     setRevealDelete({ type: null, id: null });
   }
@@ -1073,17 +1037,12 @@ function InnerApp() {
       const dayObj = { ...(s.dailyCounts?.[dKey] || {}) };
       if (dayObj[key]) dayObj[key] = Math.max(0, dayObj[key] - 1);
 
-      return {
-        ...s,
-        entries: newEntries,
-        totalXP,
-        rankRP,
-        dailyCounts: { ...s.dailyCounts, [dKey]: dayObj }
-      };
+      return { ...s, entries: newEntries, totalXP, rankRP, dailyCounts: { ...s.dailyCounts, [dKey]: dayObj } };
     });
     setRevealDelete({ type: null, id: null });
   }
 
+  // ====== Quick Actions ======
   function removeQuickAction(id) {
     setState((prev) => {
       const s = normalizeState(prev);
@@ -1099,18 +1058,23 @@ function InnerApp() {
     if (!cleanName) return;
     if (!Number.isFinite(nExp) || nExp <= 0) return;
 
+    const key = cleanName.toLowerCase();
+
     setState((prev) => {
       const s = normalizeState(prev);
-
-      const key = cleanName.toLowerCase();
       const qas = Array.isArray(s.quickActions) ? s.quickActions : [];
       const exists = qas.some((qa) => (qa?.name || "").toLowerCase() === key);
       if (exists) return s;
 
-      return { ...s, quickActions: [...qas, { id: "qa_" + uid(), name: cleanName, exp: nExp, icon: "⏳" }] };
+      return {
+        ...s,
+        quickActions: [...qas, { id: "qa_" + uid(), name: cleanName, exp: nExp, icon: "⏳" }]
+      };
     });
 
-    ensureActivityTagged(cleanName);
+    // Tag modal tylko TU (przy dodawaniu quick action)
+    setTagChoice({ trackKey: "vocal", timeCost: "M" });
+    setTagModal({ open: true, activityKey: key, activityName: cleanName });
   }
 
   function clearAll() {
@@ -1120,6 +1084,7 @@ function InnerApp() {
     setRevealDelete({ type: null, id: null });
   }
 
+  // ====== Staty report TXT ======
   function downloadStatsTxt() {
     const lines = [];
     lines.push("Żyćko RPG — STATY");
@@ -1148,7 +1113,7 @@ function InnerApp() {
     downloadText(`zyćko-rpg-staty_${todayKey()}.txt`, lines.join("\n"));
   }
 
-  // ====== QUESTS: listy / filtrowanie ======
+  // ====== QUEST LISTS ======
   const allQuests = Array.isArray(state.quests) ? state.quests : [];
   const dayKeyNow = todayKey();
   const weekKeyNow = isoWeekKey(new Date());
@@ -1157,10 +1122,6 @@ function InnerApp() {
   const dailyQuests = useMemo(() => allQuests.filter((q) => q.period === "daily" && q.dueDayKey === dayKeyNow), [allQuests, dayKeyNow]);
   const weeklyQuests = useMemo(() => allQuests.filter((q) => q.period === "weekly" && q.dueWeekKey === weekKeyNow), [allQuests, weekKeyNow]);
   const monthlyQuests = useMemo(() => allQuests.filter((q) => q.period === "monthly" && q.dueMonthKey === monthKeyNow), [allQuests, monthKeyNow]);
-
-  const openDaily = dailyQuests.filter((q) => q.status === "open" && !q.snoozeUntil);
-  const openWeekly = weeklyQuests.filter((q) => q.status === "open" && !q.snoozeUntil);
-  const openMonthly = monthlyQuests.filter((q) => q.status === "open" && !q.snoozeUntil);
 
   // ====== QUEST ACTIONS ======
   function requestQuestDone(q) {
@@ -1176,12 +1137,11 @@ function InnerApp() {
       const qs = Array.isArray(s.quests) ? s.quests : [];
       const idx = qs.findIndex((x) => x.id === qid);
       if (idx < 0) return s;
+
       const q = qs[idx];
       if (q.status !== "open") return s;
 
       const mult = qualityMult(quality);
-
-      // Fitness: łagodniejsza kara na Q1 (żeby nie demotywować)
       const isFitness = q.track === "fitness";
       const rpMult = isFitness && Number(quality) === 1 ? Math.max(mult.rp, 0.9) : mult.rp;
       const cpMult = isFitness && Number(quality) === 1 ? Math.max(mult.cp, 0.8) : mult.cp;
@@ -1193,7 +1153,6 @@ function InnerApp() {
       const doneTs = Date.now();
       const doneDayKey = todayKey();
 
-      // wpis do dziennika “z questa” — żebyś widział historię jako EXP
       const entryName = `[QUEST] ${q.title}`;
       const entry = {
         id: uid(),
@@ -1208,12 +1167,10 @@ function InnerApp() {
         trackKey: q.track
       };
 
-      // update quest
       const updated = { ...q, status: "done", quality, doneTs, doneDayKey };
       const newQuests = [...qs];
       newQuests[idx] = updated;
 
-      // quest history (dla adaptacji i raportów)
       const hist = {
         id: q.id,
         title: q.title,
@@ -1234,7 +1191,6 @@ function InnerApp() {
         gainedCP
       };
 
-      // kampania: CP do ścieżki
       const camp = s.campaign && typeof s.campaign === "object" ? s.campaign : defaultCampaignPack();
       const tracks = Array.isArray(camp.tracks) ? camp.tracks : [];
       const tIdx = tracks.findIndex((t) => t.key === q.track);
@@ -1266,39 +1222,45 @@ function InnerApp() {
       const cur = qs[idx];
       if (cur.status !== "open") return s;
 
-      const preferTypes = cur.track === "vocal" ? ["Drill", "Build", "Boss"] : cur.track === "career" ? ["Ship", "Build"] : cur.track === "bands" ? ["Build", "Drill", "Ship"] : cur.track === "dragon" ? ["Build"] : ["Starter", "Drill", "Build"];
-      const tpl = pickTemplateForTrack(cur.track, { preferTypes, maxDifficulty: 3, avoidTypes: [cur.type] }) || pickTemplateForTrack(cur.track, { maxDifficulty: 3 });
+      const preferTypes =
+        cur.track === "vocal"
+          ? ["Drill", "Build", "Boss"]
+          : cur.track === "career"
+          ? ["Ship", "Build"]
+          : cur.track === "bands"
+          ? ["Build", "Drill", "Ship"]
+          : cur.track === "dragon"
+          ? ["Build"]
+          : ["Starter", "Drill", "Build"];
+
+      const tpl =
+        pickTemplateForTrack(cur.track, { preferTypes, maxDifficulty: 3, avoidTypes: [cur.type] }) ||
+        pickTemplateForTrack(cur.track, { maxDifficulty: 3 });
 
       if (!tpl) return s;
 
-      const replacement = makeQuestFromTemplate(tpl, cur.period, cur.period === "daily" ? cur.dueDayKey : cur.period === "weekly" ? cur.dueWeekKey : cur.dueMonthKey || cur.dueCampaignId);
-      // zachowaj dueKey
+      const replacement = makeQuestFromTemplate(tpl, cur.period, cur.period === "daily" ? cur.dueDayKey : cur.period === "weekly" ? cur.dueWeekKey : cur.dueMonthKey);
       replacement.dueDayKey = cur.dueDayKey;
       replacement.dueWeekKey = cur.dueWeekKey;
       replacement.dueMonthKey = cur.dueMonthKey;
-      replacement.dueCampaignId = cur.dueCampaignId;
 
       const newQuests = [...qs];
       newQuests[idx] = replacement;
 
-      const hist = {
-        id: cur.id,
-        title: cur.title,
-        track: cur.track,
-        type: cur.type,
-        period: cur.period,
-        status: "rerolled",
-        ts: Date.now()
-      };
-
+      const hist = { id: cur.id, title: cur.title, track: cur.track, type: cur.type, period: cur.period, status: "rerolled", ts: Date.now() };
       return { ...s, quests: newQuests, questHistory: [hist, ...(Array.isArray(s.questHistory) ? s.questHistory : [])] };
     });
   }
 
   function snoozeQuest(q) {
-    // prosto: uśpij na 3 dni (daily), 7 dni (weekly), do końca miesiąca (monthly)
     const d = new Date();
-    const until = q.period === "daily" ? todayKey(new Date(d.getFullYear(), d.getMonth(), d.getDate() + 3)) : q.period === "weekly" ? todayKey(new Date(d.getFullYear(), d.getMonth(), d.getDate() + 7)) : todayKey(new Date(d.getFullYear(), d.getMonth() + 1, 1));
+    const until =
+      q.period === "daily"
+        ? todayKey(new Date(d.getFullYear(), d.getMonth(), d.getDate() + 3))
+        : q.period === "weekly"
+        ? todayKey(new Date(d.getFullYear(), d.getMonth(), d.getDate() + 7))
+        : todayKey(new Date(d.getFullYear(), d.getMonth() + 1, 1));
+
     setState((prev) => {
       const s = normalizeState(prev);
       const qs = Array.isArray(s.quests) ? s.quests : [];
@@ -1315,7 +1277,6 @@ function InnerApp() {
     });
   }
 
-  // automatyczne “odśnieżanie” uśpionych questów
   useEffect(() => {
     const day = todayKey();
     setState((prev) => {
@@ -1334,7 +1295,7 @@ function InnerApp() {
     });
   }, [state.lastSeenDay]);
 
-  // ====== EVENTY ======
+  // ====== Events ======
   function addEvent() {
     const type = EVENT_TYPES.find((x) => x.key === eventType) || EVENT_TYPES[0];
     const bonusExp = Number(eventExpBonus);
@@ -1382,10 +1343,9 @@ function InnerApp() {
     setEventExpBonus("");
   }
 
-  // ====== KAMPANIA: raporty + archiwum ======
+  // ====== Campaign reports ======
   const campaign = state.campaign || defaultCampaignPack();
   const campaignTracks = Array.isArray(campaign.tracks) ? campaign.tracks : [];
-
   const campaignPct = useMemo(() => {
     const sum = campaignTracks.reduce((a, t) => a + (Number(t.cp) || 0), 0);
     const target = campaignTracks.reduce((a, t) => a + (Number(t.targetCP) || 0), 0);
@@ -1442,7 +1402,6 @@ function InnerApp() {
   }
 
   function archiveAndRestartCampaign() {
-    // archiwizuj obecny sezon (snapshot kampanii + questHistory) i start nowy
     setState((prev) => {
       const s = normalizeState(prev);
       const archived = Array.isArray(s.archivedCampaigns) ? s.archivedCampaigns : [];
@@ -1462,15 +1421,12 @@ function InnerApp() {
         }
       };
 
-      // start nowy
       const newPack = defaultCampaignPack();
 
       return {
         ...s,
         campaign: newPack,
         archivedCampaigns: [payload, ...archived],
-        // questy i historia mogą zostać jako ogólna historia, ale dla “czystej kampanii”
-        // czyścimy questHistory i questy otwarte; wpisy zostają jako życiowy log
         questHistory: [],
         quests: [],
         questGen: { lastDayKey: "", lastWeekKey: "", lastMonthKey: "" }
@@ -1478,15 +1434,24 @@ function InnerApp() {
     });
   }
 
-  // ====== UI: tabs ======
+  // ====== UI tabs ======
   function setTab(tab) {
     setState((prev) => ({ ...normalizeState(prev), activeTab: tab }));
     setRevealDelete({ type: null, id: null });
   }
-
   function hideDelete() {
     setRevealDelete({ type: null, id: null });
   }
+
+  // ====== Quest lists ======
+  const allQuests = Array.isArray(state.quests) ? state.quests : [];
+  const dayKeyNow = todayKey();
+  const weekKeyNow = isoWeekKey(new Date());
+  const monthKeyNow = monthKey(new Date());
+
+  const dailyQuests = useMemo(() => allQuests.filter((q) => q.period === "daily" && q.dueDayKey === dayKeyNow), [allQuests, dayKeyNow]);
+  const weeklyQuests = useMemo(() => allQuests.filter((q) => q.period === "weekly" && q.dueWeekKey === weekKeyNow), [allQuests, weekKeyNow]);
+  const monthlyQuests = useMemo(() => allQuests.filter((q) => q.period === "monthly" && q.dueMonthKey === monthKeyNow), [allQuests, monthKeyNow]);
 
   return (
     <div
@@ -1503,7 +1468,6 @@ function InnerApp() {
           <div className="title stroke">Żyćko RPG</div>
           <p className="subtitle stroke">RPG • EXP • levele • rangi • questy • kampania</p>
 
-          {/* TAB SWITCH — bez nowej karty */}
           <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
             <button className={`btn stroke ${state.activeTab === "log" ? "" : "btnSecondary"}`} onClick={() => setTab("log")}>
               📓 Dziennik
@@ -1519,7 +1483,7 @@ function InnerApp() {
 
         {state.activeTab === "log" ? (
           <div className="grid">
-            {/* LEWA KARTA: dodawanie + szybkie akcje */}
+            {/* LEWA KARTA */}
             <div className="card" data-keep>
               <div className="hudTop">
                 <div className="badge">
@@ -1586,7 +1550,12 @@ function InnerApp() {
                 <div className="sectionTitle stroke" style={{ margin: 0 }}>
                   Szybkie akcje
                 </div>
-                <button className="btn btnSecondary stroke" onClick={clearAll}>
+                <button className="btn btnSecondary stroke" onClick={() => {
+                  localStorage.removeItem(LS_KEY_V2);
+                  localStorage.removeItem(LS_KEY_V1);
+                  setState(normalizeState(null));
+                  setRevealDelete({ type: null, id: null });
+                }}>
                   Wyczyść wszystko
                 </button>
               </div>
@@ -1620,11 +1589,11 @@ function InnerApp() {
               </div>
 
               <div style={{ marginTop: 12 }} className="notice stroke">
-                Tip: nowe aktywności aplikacja poprosi raz o przypisanie do ścieżki (Wokal/Kariera/Zespoły/Smocza Grota/Fitness). Dzięki temu questy będą adaptacyjne.
+                Tagowanie kategorii pojawi się <b>tylko</b> przy dodawaniu nowej szybkiej akcji. Klikanie quick action nie będzie już pytać.
               </div>
             </div>
 
-            {/* PRAWA KARTA: raport + historia */}
+            {/* PRAWA KARTA */}
             <div className="card" data-keep>
               <div className="flexBetween">
                 <div className="sectionTitle stroke" style={{ margin: 0 }}>
@@ -1748,10 +1717,6 @@ function InnerApp() {
                 })}
               </div>
 
-              <div style={{ marginTop: 12 }} className="notice stroke">
-                Jakość robienia questów (1–3) wpływa na nagrody. Ocena jest tylko przy questach — szybko, bez notatek.
-              </div>
-
               <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
                 <button
                   className="btn btnSecondary stroke"
@@ -1799,7 +1764,7 @@ function InnerApp() {
                     Dziś
                   </div>
                   {dailyQuests.length === 0 ? (
-                    <div className="notice stroke">Brak questów na dziś (odśwież / poczekaj na generowanie).</div>
+                    <div className="notice stroke">Brak questów na dziś.</div>
                   ) : (
                     <div className="list" style={{ display: "grid", gap: 10 }}>
                       {dailyQuests.map((q) => (
@@ -1807,9 +1772,6 @@ function InnerApp() {
                       ))}
                     </div>
                   )}
-                  <div className="notice stroke" style={{ marginTop: 10 }}>
-                    Tip: nie musisz robić wszystkiego. Questy są propozycjami. 🔁 Zamień i 😴 Uśpij uczą system Twoich preferencji.
-                  </div>
                 </div>
 
                 <div className="statBox">
@@ -1843,7 +1805,7 @@ function InnerApp() {
                 </div>
 
                 <div className="notice stroke">
-                  Koncerty i rzeczy “zewnętrzne” dodawaj jako <b>Event</b> (bonus EXP/RP). System nie będzie Ci ich losował jako questów.
+                  Koncerty i rzeczy “zewnętrzne” dodawaj jako <b>Event</b> (bonus EXP/RP).
                 </div>
               </div>
             </div>
@@ -1851,16 +1813,12 @@ function InnerApp() {
         )}
       </div>
 
-      {/* MODAL: tagowanie aktywności */}
-      <Modal
-        open={tagModal.open}
-        title="Przypisz aktywność do ścieżki (jednorazowo)"
-        onClose={() => setTagModal({ open: false, activityKey: "", activityName: "" })}
-      >
+      {/* MODAL: tagowanie aktywności (tylko po dodaniu QUICK ACTION) */}
+      <Modal open={tagModal.open} title="Przypisz szybką akcję do ścieżki (jednorazowo)" onClose={() => setTagModal({ open: false, activityKey: "", activityName: "" })}>
         <div className="notice stroke">
-          Aktywność: <b>{tagModal.activityName}</b>
+          Szybka akcja: <b>{tagModal.activityName}</b>
           <br />
-          Dzięki temu questy będą lepiej dopasowane.
+          To ustawienie będzie używane do adaptacji questów.
         </div>
 
         <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
@@ -1891,7 +1849,7 @@ function InnerApp() {
               Zapisz
             </button>
             <button className="btn btnSecondary stroke" onClick={() => setTagModal({ open: false, activityKey: "", activityName: "" })}>
-              Pomiń (na razie)
+              Pomiń (nie polecam)
             </button>
           </div>
         </div>
